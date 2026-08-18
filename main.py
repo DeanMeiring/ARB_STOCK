@@ -16,6 +16,9 @@ import logger
 from binance_client import BinanceBookTickerStream
 from arb_calculator import check_both_directions
 
+if config.EXECUTE_TRADES:
+    import executor
+
 # simple in-memory counters for a live status line
 stats = {"ticks": 0, "opportunities": 0}
 
@@ -32,6 +35,13 @@ async def on_price_update(latest: dict):
 
     fwd, rev = check_both_directions(btcusdt, ethbtc, ethusdt)
 
+    # debug: show how close the best direction is getting to the threshold,
+    # even when it doesn't clear it - useful to confirm the math is sane
+    if stats["ticks"] % 500 == 0:
+        best = max(fwd, rev, key=lambda r: r.profit_pct)
+        print(f"    [debug] best loop this tick: {best.direction} at {best.profit_pct*100:.4f}% "
+              f"(threshold: {config.MIN_PROFIT_THRESHOLD*100:.4f}%)")
+
     for result in (fwd, rev):
         if result.is_opportunity:
             stats["opportunities"] += 1
@@ -45,6 +55,12 @@ async def on_price_update(latest: dict):
                 f"ETHUSDT {ethusdt.bid}/{ethusdt.ask}"
             )
 
+            if config.EXECUTE_TRADES:
+                if "forward" in result.direction:
+                    executor.execute_forward_loop(result.profit_pct)
+                else:
+                    executor.execute_reverse_loop(result.profit_pct)
+
     # lightweight heartbeat every 200 ticks so you know it's alive
     if stats["ticks"] % 200 == 0:
         print(f"... {stats['ticks']} ticks processed, {stats['opportunities']} opportunities logged so far")
@@ -52,6 +68,10 @@ async def on_price_update(latest: dict):
 
 async def main():
     logger.init_db()
+    if config.EXECUTE_TRADES:
+        executor.init_trades_db()
+        print("*** EXECUTE_TRADES is ON - real orders will be placed against "
+              f"{config.BINANCE_BASE_URL} ***")
     stream = BinanceBookTickerStream(config.SYMBOLS)
     await stream.run(on_price_update)
 

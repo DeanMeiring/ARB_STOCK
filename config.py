@@ -34,5 +34,24 @@ BINANCE_WS_BASE = "wss://stream.binance.com:9443/stream"
 DB_PATH = "logs/opportunities.db"
 LOG_ALL_TICKS = False  # if True, logs every price update, not just opportunities (large file fast)
 
-# --- Starting capital assumption (for logging theoretical $ profit only, no real trading) ---
+
+# --- Live/Testnet execution ---
+# EXECUTE_TRADES is the master switch. False = detection/logging only (default,
+# safe). True = actually places orders against whichever BASE_URL is set below.
+EXECUTE_TRADES = False
+
+# Binance Testnet - fake money, real order matching engine/API behavior.
+# Get free testnet API keys at https://testnet.binance.vision/
+# NEVER hardcode keys here - set them as environment variables:
+#   export BINANCE_API_KEY="..."
+#   export BINANCE_API_SECRET="..."
+import os
+BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
+BINANCE_BASE_URL = "https://testnet.binance.vision"  # DO NOT point this at api.binance.com without a full review
+
+# Amount of USDT to risk per triangular loop attempt (testnet money)
+TRADE_SIZE_USDT = 50.0
+
+# --- Starting capital assumption (for logging theoretical $ profit only) ---
 SIMULATED_START_USDT = 1000.0
