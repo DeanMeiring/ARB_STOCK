@@ -79,7 +79,7 @@ def execute_forward_loop(expected_profit_pct: float):
         legs[0][2] = r1
         btc_acquired = float(r1["executedQty"])
 
-        r2 = binance_rest.place_market_order(config.LEG_2, "BUY", quote_order_qty=btc_acquired * float(r1["fills"][0]["price"]))
+        r2 = binance_rest.place_market_order(config.LEG_2, "BUY", quote_order_qty=btc_acquired)
         legs[1][2] = r2
         eth_acquired = float(r2["executedQty"])
 
