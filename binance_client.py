@@ -31,7 +31,8 @@ class BinanceBookTickerStream:
         """
         while True:
             try:
-                async with websockets.connect(self.url, ping_interval=20) as ws:
+                print(f"Connecting to Binance WS: {self.url}")
+                async with websockets.connect(self.url, ping_interval=20, open_timeout=15) as ws:
                     print(f"Connected to Binance WS: {self.symbols}")
                     async for message in ws:
                         data = json.loads(message)
