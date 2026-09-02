@@ -4,6 +4,7 @@ Minimal Telegram notifier - no execution, no external bot framework.
 Polls Telegram's getUpdates for incoming messages. Anyone who sends
 /login <TELEGRAM_LOGIN_PASSWORD> gets their chat added to logger's
 telegram_subscribers table and starts receiving opportunity alerts.
+/report (logged-in only) replies with summary stats from Postgres.
 There is no way to remove a subscriber yet - if that's ever needed,
 delete the row directly in Postgres.
 
@@ -53,6 +54,8 @@ class TelegramNotifier:
 
         if text.startswith("/login"):
             self._handle_login(chat_id, text)
+        elif text.startswith("/report"):
+            self._handle_report(chat_id)
 
     def _handle_login(self, chat_id, text):
         import logger  # deferred to avoid a hard import-time DB dependency
@@ -67,6 +70,34 @@ class TelegramNotifier:
             self._send(chat_id, "Logged in. You'll get an alert here when a real arbitrage opportunity clears threshold.")
         else:
             self._send(chat_id, "Wrong password.")
+
+    def _handle_report(self, chat_id):
+        import logger
+
+        if chat_id not in logger.get_subscribers():
+            self._send(chat_id, "Not logged in - send /login <password> first.")
+            return
+
+        stats = logger.get_report_stats()
+        lines = [
+            f"Opportunities: {stats['total']} total, {stats['last_24h']} in the last 24h",
+            f"Subscribers: {stats['subscribers']}",
+        ]
+        if stats["latest"]:
+            direction, profit_pct, profit_usdt, ts = stats["latest"]
+            lines.append(
+                f"Most recent: {direction} | {profit_pct * 100:.4f}% "
+                f"(${profit_usdt:.2f}) at {ts:%Y-%m-%d %H:%M} UTC"
+            )
+        else:
+            lines.append("No opportunities logged yet.")
+        if stats["best"]:
+            direction, profit_pct, profit_usdt, ts = stats["best"]
+            lines.append(
+                f"Best ever: {direction} | {profit_pct * 100:.4f}% "
+                f"(${profit_usdt:.2f}) at {ts:%Y-%m-%d %H:%M} UTC"
+            )
+        self._send(chat_id, "\n".join(lines))
 
     def _send(self, chat_id, text):
         try:

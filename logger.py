@@ -94,3 +94,43 @@ def get_subscribers() -> list:
     cur.close()
     conn.close()
     return rows
+
+
+def get_report_stats() -> dict:
+    """Summary stats for the /report Telegram command."""
+    conn = _connect()
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM opportunities")
+    total = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*) FROM opportunities
+        WHERE timestamp > NOW() - INTERVAL '24 hours'
+    """)
+    last_24h = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT direction, profit_pct, profit_usdt, timestamp
+        FROM opportunities ORDER BY timestamp DESC LIMIT 1
+    """)
+    latest = cur.fetchone()
+
+    cur.execute("""
+        SELECT direction, profit_pct, profit_usdt, timestamp
+        FROM opportunities ORDER BY profit_pct DESC LIMIT 1
+    """)
+    best = cur.fetchone()
+
+    cur.execute("SELECT COUNT(*) FROM telegram_subscribers")
+    subscribers = cur.fetchone()[0]
+
+    cur.close()
+    conn.close()
+    return {
+        "total": total,
+        "last_24h": last_24h,
+        "latest": latest,
+        "best": best,
+        "subscribers": subscribers,
+    }
