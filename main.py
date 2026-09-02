@@ -1,10 +1,11 @@
 """
 ARB_STOCK - Triangular Arbitrage Monitor (Binance, USDT/BTC/ETH loop)
 
-Detection & logging only - this does NOT place real trades. It watches live
-prices, calculates the theoretical return of looping through
-USDT -> BTC -> ETH -> USDT (and the reverse direction), and logs any
-opportunity that clears the fee-adjusted profit threshold.
+Detection, logging & Telegram alerts only - this does NOT place real trades.
+It watches live prices, calculates the theoretical return of looping through
+USDT -> BTC -> ETH -> USDT (and the reverse direction), logs any opportunity
+that clears the fee-adjusted profit threshold to Postgres, and messages
+anyone who has /login'd via the Telegram bot so it can be executed manually.
 
 Run:
     python main.py
@@ -15,12 +16,15 @@ import config
 import logger
 from binance_client import BinanceBookTickerStream
 from arb_calculator import check_both_directions
+from telegram_bot import TelegramNotifier
 
 if config.EXECUTE_TRADES:
     import executor
 
 # simple in-memory counters for a live status line
 stats = {"ticks": 0, "opportunities": 0}
+
+notifier = TelegramNotifier()
 
 
 async def on_price_update(latest: dict):
@@ -46,6 +50,7 @@ async def on_price_update(latest: dict):
         if result.is_opportunity:
             stats["opportunities"] += 1
             logger.log_opportunity(result, btcusdt, ethbtc, ethusdt)
+            await notifier.notify_opportunity(result)
             print(
                 f"[OPPORTUNITY] {result.direction} | "
                 f"profit: {result.profit_pct*100:.4f}% "
@@ -73,7 +78,10 @@ async def main():
         print("*** EXECUTE_TRADES is ON - real orders will be placed against "
               f"{config.BINANCE_BASE_URL} ***")
     stream = BinanceBookTickerStream(config.SYMBOLS)
-    await stream.run(on_price_update)
+    await asyncio.gather(
+        stream.run(on_price_update),
+        notifier.poll_forever(),
+    )
 
 
 if __name__ == "__main__":

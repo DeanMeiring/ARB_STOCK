@@ -31,7 +31,8 @@ class BinanceBookTickerStream:
         """
         while True:
             try:
-                async with websockets.connect(self.url, ping_interval=20) as ws:
+                print(f"Connecting to Binance WS: {self.url}")
+                async with websockets.connect(self.url, ping_interval=20, open_timeout=15) as ws:
                     print(f"Connected to Binance WS: {self.symbols}")
                     async for message in ws:
                         data = json.loads(message)
@@ -50,6 +51,10 @@ class BinanceBookTickerStream:
                         if len(self.latest) == len(self.symbols):
                             await on_update(self.latest)
 
-            except (websockets.exceptions.ConnectionClosed, OSError) as e:
+            except (websockets.exceptions.WebSocketException, OSError) as e:
+                # WebSocketException covers handshake-level rejections (e.g. an
+                # HTTP 451/403 InvalidStatus) as well as drops mid-connection -
+                # letting any of those crash the process instead of retrying is
+                # how a single rejected handshake turns into a Railway crash loop.
                 print(f"WebSocket dropped ({e}), reconnecting in 3s...")
                 await asyncio.sleep(3)
