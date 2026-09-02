@@ -51,6 +51,10 @@ class BinanceBookTickerStream:
                         if len(self.latest) == len(self.symbols):
                             await on_update(self.latest)
 
-            except (websockets.exceptions.ConnectionClosed, OSError) as e:
+            except (websockets.exceptions.WebSocketException, OSError) as e:
+                # WebSocketException covers handshake-level rejections (e.g. an
+                # HTTP 451/403 InvalidStatus) as well as drops mid-connection -
+                # letting any of those crash the process instead of retrying is
+                # how a single rejected handshake turns into a Railway crash loop.
                 print(f"WebSocket dropped ({e}), reconnecting in 3s...")
                 await asyncio.sleep(3)
