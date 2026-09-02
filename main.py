@@ -12,6 +12,7 @@ Run:
 """
 
 import asyncio
+from datetime import datetime, timezone
 import config
 import logger
 from binance_client import BinanceBookTickerStream
@@ -30,9 +31,13 @@ notifier = TelegramNotifier()
 # (hundreds/sec), just sampled periodically for the /report "closest miss" stat
 best_miss = {"direction": None, "profit_pct": None, "profit_usdt": None}
 
+# updated on every tick - the watchdog task uses this to detect a stuck/dropped feed
+last_tick_at = {"time": None}
+
 
 async def on_price_update(latest: dict):
     stats["ticks"] += 1
+    last_tick_at["time"] = datetime.now(timezone.utc)
 
     btcusdt = latest.get(config.LEG_1.upper())
     ethbtc = latest.get(config.LEG_2.upper())
@@ -90,6 +95,49 @@ async def flush_near_miss_periodically():
             best_miss["profit_usdt"] = None
 
 
+async def watchdog():
+    """
+    Two independent checks on a 60s tick:
+    - Stale feed: alert once if no price tick has arrived in
+      STALE_TICK_ALERT_SECONDS, and once more when it recovers. Guards
+      against a silently stuck/disconnected feed going unnoticed for days.
+    - Heartbeat: an unconditional "still running" message every
+      HEARTBEAT_INTERVAL_SECONDS, so a full process hang (not just a
+      dropped WS) is also visible - if this message stops, the whole bot
+      has stopped, not just the price feed.
+    """
+    stale_alerted = False
+    last_heartbeat_at = datetime.now(timezone.utc)
+    ticks_at_last_heartbeat = 0
+
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now(timezone.utc)
+
+        last_tick = last_tick_at["time"]
+        seconds_since_tick = (now - last_tick).total_seconds() if last_tick else None
+        is_stale = seconds_since_tick is None or seconds_since_tick > config.STALE_TICK_ALERT_SECONDS
+
+        if is_stale and not stale_alerted:
+            stale_alerted = True
+            await notifier.send_alert(
+                f"⚠️ No price ticks in over {config.STALE_TICK_ALERT_SECONDS // 60} min - "
+                "the feed may be stuck or disconnected. Check Railway logs."
+            )
+        elif not is_stale and stale_alerted:
+            stale_alerted = False
+            await notifier.send_alert("✅ Back up - price ticks flowing again.")
+
+        if (now - last_heartbeat_at).total_seconds() >= config.HEARTBEAT_INTERVAL_SECONDS:
+            ticks_since = stats["ticks"] - ticks_at_last_heartbeat
+            await notifier.send_alert(
+                f"✅ Still running. {ticks_since} ticks, "
+                f"{stats['opportunities']} opportunities since last heartbeat."
+            )
+            ticks_at_last_heartbeat = stats["ticks"]
+            last_heartbeat_at = now
+
+
 async def main():
     logger.init_db()
     if config.EXECUTE_TRADES:
@@ -101,6 +149,7 @@ async def main():
         stream.run(on_price_update),
         notifier.poll_forever(),
         flush_near_miss_periodically(),
+        watchdog(),
     )
 
 

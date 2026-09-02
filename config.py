@@ -30,6 +30,13 @@ MIN_PROFIT_THRESHOLD = 0.0005  # 0.05%
 # --- WebSocket ---
 BINANCE_WS_BASE = "wss://stream.binance.com:9443/stream"
 
+# --- Watchdog / heartbeat ---
+# Alert if no price tick has arrived in this long - likely stuck or disconnected.
+STALE_TICK_ALERT_SECONDS = 600  # 10 minutes
+# Separately, a "still running" Telegram message on this cadence regardless
+# of anything being wrong - confirms the whole process (not just the WS) is alive.
+HEARTBEAT_INTERVAL_SECONDS = 86400  # 24 hours
+
 # --- Logging ---
 DB_PATH = "logs/opportunities.db"  # legacy SQLite path, only used by executor.py's trades table
 LOG_ALL_TICKS = False  # if True, logs every price update, not just opportunities (large file fast)

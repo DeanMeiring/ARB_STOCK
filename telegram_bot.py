@@ -147,17 +147,20 @@ class TelegramNotifier:
             print(f"[telegram] send error: {e}")
 
     async def notify_opportunity(self, result):
-        if not config.TELEGRAM_API_BOT:
-            return
-        import logger
-
-        subscribers = await asyncio.to_thread(logger.get_subscribers)
-        if not subscribers:
-            return
         text = (
             f"[OPPORTUNITY] {result.direction}\n"
             f"profit: {result.profit_pct * 100:.4f}% "
             f"(${result.profit_usdt:.2f} on ${result.start_usdt:.0f})"
         )
+        await self.send_alert(text)
+
+    async def send_alert(self, text: str):
+        """Send text to every logged-in chat - used for opportunities, the
+        stale-connection watchdog, and the daily heartbeat alike."""
+        if not config.TELEGRAM_API_BOT:
+            return
+        import logger
+
+        subscribers = await asyncio.to_thread(logger.get_subscribers)
         for chat_id in subscribers:
             await asyncio.to_thread(self._send, chat_id, text)
