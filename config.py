@@ -31,8 +31,20 @@ MIN_PROFIT_THRESHOLD = 0.0005  # 0.05%
 BINANCE_WS_BASE = "wss://stream.binance.com:9443/stream"
 
 # --- Logging ---
-DB_PATH = "logs/opportunities.db"
+DB_PATH = "logs/opportunities.db"  # legacy SQLite path, only used by executor.py's trades table
 LOG_ALL_TICKS = False  # if True, logs every price update, not just opportunities (large file fast)
+
+# Postgres (Railway add-on) - opportunities and Telegram subscribers live here now.
+# Railway injects this automatically via the DATABASE_URL reference variable
+# once the Postgres service is attached - never hardcode a connection string.
+import os
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+# --- Telegram notifications ---
+# Bot token from @BotFather. Anyone who messages the bot the right password
+# via /login gets added as a notification recipient - see telegram_bot.py.
+TELEGRAM_API_BOT = os.environ.get("TELEGRAM_API_BOT", "")
+TELEGRAM_LOGIN_PASSWORD = os.environ.get("TELEGRAM_LOGIN_PASSWORD", "")
 
 
 # --- Live/Testnet execution ---
@@ -45,7 +57,6 @@ EXECUTE_TRADES = False
 # NEVER hardcode keys here - set them as environment variables:
 #   export BINANCE_API_KEY="..."
 #   export BINANCE_API_SECRET="..."
-import os
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "")
 BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
 BINANCE_BASE_URL = "https://testnet.binance.vision"  # DO NOT point this at api.binance.com without a full review
