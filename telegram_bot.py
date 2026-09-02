@@ -13,8 +13,20 @@ HTTP calls are pushed to a thread so they never stall the WS loop.
 """
 
 import asyncio
+from datetime import datetime, timezone
 import requests
 import config
+
+
+def _format_ago(ts):
+    seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    if seconds < 60:
+        return f"{int(seconds)}s ago"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
 
 
 class TelegramNotifier:
@@ -80,23 +92,48 @@ class TelegramNotifier:
 
         stats = logger.get_report_stats()
         lines = [
+            "📊 ARB_STOCK Report",
+            "",
             f"Opportunities: {stats['total']} total, {stats['last_24h']} in the last 24h",
-            f"Subscribers: {stats['subscribers']}",
+            f"Threshold: {config.MIN_PROFIT_THRESHOLD * 100:.4f}%",
+            "",
         ]
+
         if stats["latest"]:
             direction, profit_pct, profit_usdt, ts = stats["latest"]
             lines.append(
-                f"Most recent: {direction} | {profit_pct * 100:.4f}% "
-                f"(${profit_usdt:.2f}) at {ts:%Y-%m-%d %H:%M} UTC"
+                f"Most recent: {direction}\n"
+                f"  {profit_pct * 100:.4f}% (${profit_usdt:.2f}) — {_format_ago(ts)}"
             )
         else:
-            lines.append("No opportunities logged yet.")
+            lines.append("Most recent: none logged yet")
+        lines.append("")
+
         if stats["best"]:
             direction, profit_pct, profit_usdt, ts = stats["best"]
             lines.append(
-                f"Best ever: {direction} | {profit_pct * 100:.4f}% "
-                f"(${profit_usdt:.2f}) at {ts:%Y-%m-%d %H:%M} UTC"
+                f"Best ever: {direction}\n"
+                f"  {profit_pct * 100:.4f}% (${profit_usdt:.2f}) — {ts:%b %-d, %H:%M} UTC"
             )
+        else:
+            lines.append("Best ever: none logged yet")
+        lines.append("")
+
+        closest = logger.get_closest_miss_24h()
+        if closest:
+            direction, profit_pct, profit_usdt, ts = closest
+            shortfall = config.MIN_PROFIT_THRESHOLD - profit_pct
+            lines.append(
+                f"Closest miss (last 24h): {direction}\n"
+                f"  {profit_pct * 100:.4f}% — {shortfall * 100:.4f}% short of threshold, "
+                f"{_format_ago(ts)}"
+            )
+        else:
+            lines.append("Closest miss (last 24h): no data yet")
+        lines.append("")
+
+        lines.append(f"Subscribers: {stats['subscribers']}")
+
         self._send(chat_id, "\n".join(lines))
 
     def _send(self, chat_id, text):

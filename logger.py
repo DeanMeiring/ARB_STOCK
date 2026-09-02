@@ -41,6 +41,15 @@ def init_db():
             authorized_at TIMESTAMPTZ NOT NULL
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS near_misses (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMPTZ NOT NULL,
+            direction TEXT NOT NULL,
+            profit_pct DOUBLE PRECISION,
+            profit_usdt DOUBLE PRECISION
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -94,6 +103,39 @@ def get_subscribers() -> list:
     cur.close()
     conn.close()
     return rows
+
+
+def log_near_miss(direction: str, profit_pct: float, profit_usdt: float):
+    """
+    Record the best (highest profit_pct) sub-threshold result seen in a
+    sampling window - see main.py's periodic flush. Not written per-tick,
+    that would be hundreds of writes/sec for no real benefit.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO near_misses (timestamp, direction, profit_pct, profit_usdt)
+        VALUES (%s, %s, %s, %s)
+    """, (datetime.now(timezone.utc), direction, profit_pct, profit_usdt))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_closest_miss_24h():
+    """Best (highest profit_pct) sampled near-miss in the last 24h, or None."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT direction, profit_pct, profit_usdt, timestamp
+        FROM near_misses
+        WHERE timestamp > NOW() - INTERVAL '24 hours'
+        ORDER BY profit_pct DESC LIMIT 1
+    """)
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
 
 
 def get_report_stats() -> dict:

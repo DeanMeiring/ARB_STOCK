@@ -26,6 +26,10 @@ stats = {"ticks": 0, "opportunities": 0}
 
 notifier = TelegramNotifier()
 
+# best sub-threshold result seen since the last flush - not persisted per-tick
+# (hundreds/sec), just sampled periodically for the /report "closest miss" stat
+best_miss = {"direction": None, "profit_pct": None, "profit_usdt": None}
+
 
 async def on_price_update(latest: dict):
     stats["ticks"] += 1
@@ -65,10 +69,25 @@ async def on_price_update(latest: dict):
                     executor.execute_forward_loop(result.profit_pct)
                 else:
                     executor.execute_reverse_loop(result.profit_pct)
+        elif best_miss["profit_pct"] is None or result.profit_pct > best_miss["profit_pct"]:
+            best_miss["direction"] = result.direction
+            best_miss["profit_pct"] = result.profit_pct
+            best_miss["profit_usdt"] = result.profit_usdt
 
     # lightweight heartbeat every 200 ticks so you know it's alive
     if stats["ticks"] % 200 == 0:
         print(f"... {stats['ticks']} ticks processed, {stats['opportunities']} opportunities logged so far")
+
+
+async def flush_near_miss_periodically():
+    """Every 30s, persist the best sub-threshold result seen and reset it."""
+    while True:
+        await asyncio.sleep(30)
+        if best_miss["profit_pct"] is not None:
+            logger.log_near_miss(best_miss["direction"], best_miss["profit_pct"], best_miss["profit_usdt"])
+            best_miss["direction"] = None
+            best_miss["profit_pct"] = None
+            best_miss["profit_usdt"] = None
 
 
 async def main():
@@ -81,6 +100,7 @@ async def main():
     await asyncio.gather(
         stream.run(on_price_update),
         notifier.poll_forever(),
+        flush_near_miss_periodically(),
     )
 
 
