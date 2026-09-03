@@ -125,8 +125,8 @@ class TelegramNotifier:
             shortfall = config.MIN_PROFIT_THRESHOLD - profit_pct
             lines.append(
                 f"Closest miss (last 24h): {direction}\n"
-                f"  {profit_pct * 100:.4f}% — {shortfall * 100:.4f}% short of threshold, "
-                f"{_format_ago(ts)}"
+                f"  {profit_pct * 100:.4f}% — {shortfall * 100:.4f}% short of threshold\n"
+                f"  {_format_ago(ts)} ({ts:%b %-d, %H:%M} UTC)"
             )
         else:
             lines.append("Closest miss (last 24h): no data yet")
