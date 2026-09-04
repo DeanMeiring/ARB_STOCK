@@ -16,6 +16,7 @@ Uses config.DATABASE_URL (Railway's Postgres add-on, injected automatically).
 
 from datetime import datetime, timezone
 import psycopg2
+import psycopg2.extras
 import config
 
 
@@ -220,6 +221,26 @@ def log_candle(symbol: str, candle_start, open_: float, high: float, low: float,
         VALUES (%s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (symbol, candle_start) DO NOTHING
     """, (symbol, candle_start, open_, high, low, close, tick_count))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def bulk_log_candles(rows: list):
+    """
+    rows: list of (symbol, candle_start, open, high, low, close, tick_count)
+    tuples. For backfilling thousands of historical candles at once - one
+    connection for the whole batch instead of one per row.
+    """
+    if not rows:
+        return
+    conn = _connect()
+    cur = conn.cursor()
+    psycopg2.extras.execute_values(cur, """
+        INSERT INTO market_candles (symbol, candle_start, open, high, low, close, tick_count)
+        VALUES %s
+        ON CONFLICT (symbol, candle_start) DO NOTHING
+    """, rows, page_size=1000)
     conn.commit()
     cur.close()
     conn.close()
