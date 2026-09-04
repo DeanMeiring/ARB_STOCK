@@ -17,6 +17,7 @@ Model quality should improve as more weeks of data accumulate.
 """
 
 import sys
+import traceback
 from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
@@ -110,6 +111,33 @@ def train_and_report(source: str, label: str) -> str:
     )
 
 
+def _notify_subscribers(text: str):
+    """Best-effort direct Telegram send - this script's only visibility when
+    it's run as a short-lived Railway cron job. Railway's log API has
+    repeatedly come back empty for this service's quick one-off deploys, so
+    Telegram is the reliable channel for both results and failures here."""
+    if not config.TELEGRAM_API_BOT:
+        return
+    try:
+        subscribers = logger.get_subscribers()
+    except Exception as e:
+        print(f"Couldn't fetch subscribers to notify: {e}")
+        return
+    if not subscribers:
+        print("No Telegram subscribers to notify.")
+        return
+    import requests
+    for chat_id in subscribers:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{config.TELEGRAM_API_BOT}/sendMessage",
+                json={"chat_id": chat_id, "text": text[:4096]},
+                timeout=10,
+            )
+        except Exception as e:
+            print(f"Telegram send failed for {chat_id}: {e}")
+
+
 def main():
     print("Training opportunity-likelihood models...")
     results = [
@@ -123,20 +151,18 @@ def main():
 
     summary = "🤖 Model Training Report\n\n" + "\n\n".join(results)
     print(summary)
-
-    subscribers = logger.get_subscribers()
-    if not subscribers and config.TELEGRAM_API_BOT:
-        print("No Telegram subscribers to notify.")
-        return
-    if config.TELEGRAM_API_BOT:
-        import requests
-        for chat_id in subscribers:
-            requests.post(
-                f"https://api.telegram.org/bot{config.TELEGRAM_API_BOT}/sendMessage",
-                json={"chat_id": chat_id, "text": summary},
-                timeout=10,
-            )
+    _notify_subscribers(summary)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Surface the failure over Telegram too, not just stderr - this
+        # service's deploy logs have repeatedly come back empty for quick
+        # runs via Railway's log API, so a crash here was previously
+        # invisible: it happened, but nothing recorded why.
+        tb = traceback.format_exc()
+        print(tb)
+        _notify_subscribers(f"🚨 Model training run FAILED:\n\n{tb}")
+        sys.exit(1)
