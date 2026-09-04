@@ -172,6 +172,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # TEMPORARY DIAGNOSTIC - unconditional non-zero exit before anything
+    # else, to test whether Railway's deployment status for this cron
+    # service reflects the process's exit code at all. Revert once answered.
+    print("TEMPORARY DIAGNOSTIC: exiting 99 unconditionally.")
+    sys.exit(99)
+
     # Hard, unguarded checks before anything else - deliberately NOT wrapped
     # in try/except, so a failure here shows up as a distinct, non-zero
     # process exit rather than being swallowed and reported (or silently
