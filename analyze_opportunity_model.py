@@ -141,6 +141,16 @@ def _notify_subscribers(text: str):
 
 
 def main():
+    # Written before any real work starts - if /trainstatus only ever shows
+    # "started" and never "success"/"failed", the process is dying somewhere
+    # between here and the end of main() in a way that bypasses even the
+    # outer try/except (a bare sys.exit()/os._exit() or being killed), which
+    # narrows the search a lot compared to seeing nothing recorded at all.
+    try:
+        logger.log_training_run("started")
+    except Exception as e:
+        print(f"Couldn't record run start in Postgres: {e}")
+
     print("Training opportunity-likelihood models...")
     results = [
         train_and_report("triangular", "Triangular (Binance)"),
