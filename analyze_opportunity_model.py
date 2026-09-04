@@ -172,6 +172,25 @@ def main():
 
 
 if __name__ == "__main__":
+    # Hard, unguarded checks before anything else - deliberately NOT wrapped
+    # in try/except, so a failure here shows up as a distinct, non-zero
+    # process exit rather than being swallowed and reported (or silently
+    # lost) the same way as every other error path in this script. Every
+    # attempt to record what happened via Postgres or Telegram has come up
+    # completely empty across several real runs despite those paths being
+    # wrapped in try/except - this is a last resort to find out whether
+    # Railway's own deployment status even reflects this process's exit
+    # code at all for this cron service, since that's now in question.
+    if not config.DATABASE_URL:
+        print("FATAL: DATABASE_URL is empty/unset on this service.")
+        sys.exit(17)
+    try:
+        _probe_conn = psycopg2.connect(config.DATABASE_URL, connect_timeout=10)
+        _probe_conn.close()
+    except Exception as e:
+        print(f"FATAL: could not connect to Postgres with this service's DATABASE_URL: {e}")
+        sys.exit(18)
+
     try:
         main()
     except Exception:
