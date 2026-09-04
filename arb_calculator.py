@@ -87,3 +87,39 @@ def check_both_directions(btcusdt: BookTicker, ethbtc: BookTicker, ethusdt: Book
     fwd = forward_loop(btcusdt, ethbtc, ethusdt, config.SIMULATED_START_USDT, config.TAKER_FEE)
     rev = reverse_loop(btcusdt, ethbtc, ethusdt, config.SIMULATED_START_USDT, config.TAKER_FEE)
     return fwd, rev
+
+
+def cross_exchange_leg(buy_ticker: BookTicker, sell_ticker: BookTicker, buy_fee: float, sell_fee: float,
+                        start_usdt: float, direction: str) -> ArbResult:
+    """
+    Buy the base asset on one exchange (at its ASK), sell it on the other
+    (at its BID). Same bid/ask-not-mid-price principle as the triangular
+    math, just across two venues instead of three pairs on one.
+    """
+    base_bought = (start_usdt / buy_ticker.ask) * (1 - buy_fee)
+    usdt_final = (base_bought * sell_ticker.bid) * (1 - sell_fee)
+
+    profit_usdt = usdt_final - start_usdt
+    profit_pct = profit_usdt / start_usdt
+
+    return ArbResult(
+        direction=direction,
+        start_usdt=start_usdt,
+        end_usdt=usdt_final,
+        profit_pct=profit_pct,
+        profit_usdt=profit_usdt,
+        is_opportunity=profit_pct > config.MIN_PROFIT_THRESHOLD,
+    )
+
+
+def check_cross_exchange(binance_ticker: BookTicker, cryptocom_ticker: BookTicker):
+    """Check both directions of buying on one exchange and selling on the other."""
+    buy_binance = cross_exchange_leg(
+        binance_ticker, cryptocom_ticker, config.TAKER_FEE, config.CRYPTOCOM_TAKER_FEE,
+        config.SIMULATED_START_USDT, "buy Binance -> sell Crypto.com",
+    )
+    buy_cryptocom = cross_exchange_leg(
+        cryptocom_ticker, binance_ticker, config.CRYPTOCOM_TAKER_FEE, config.TAKER_FEE,
+        config.SIMULATED_START_USDT, "buy Crypto.com -> sell Binance",
+    )
+    return buy_binance, buy_cryptocom

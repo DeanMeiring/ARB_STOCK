@@ -29,6 +29,45 @@ def _format_ago(ts):
     return f"{int(seconds // 86400)}d ago"
 
 
+def _format_report_section(logger_module, source: str) -> list:
+    """Build the lines for one detector's slice of /report - shared between
+    triangular and cross_exchange so the format can't drift between them."""
+    stats = logger_module.get_report_stats(source)
+    lines = [f"Opportunities: {stats['total']} total, {stats['last_24h']} in the last 24h"]
+
+    if stats["latest"]:
+        direction, profit_pct, profit_usdt, ts = stats["latest"]
+        lines.append(
+            f"Most recent: {direction}\n"
+            f"  {profit_pct * 100:.4f}% (${profit_usdt:.2f}) — {_format_ago(ts)}"
+        )
+    else:
+        lines.append("Most recent: none logged yet")
+
+    if stats["best"]:
+        direction, profit_pct, profit_usdt, ts = stats["best"]
+        lines.append(
+            f"Best ever: {direction}\n"
+            f"  {profit_pct * 100:.4f}% (${profit_usdt:.2f}) — {ts:%b %-d, %H:%M} UTC"
+        )
+    else:
+        lines.append("Best ever: none logged yet")
+
+    closest = logger_module.get_closest_miss_24h(source)
+    if closest:
+        direction, profit_pct, profit_usdt, ts = closest
+        shortfall = config.MIN_PROFIT_THRESHOLD - profit_pct
+        lines.append(
+            f"Closest miss (last 24h): {direction}\n"
+            f"  {profit_pct * 100:.4f}% — {shortfall * 100:.4f}% short of threshold\n"
+            f"  {_format_ago(ts)} ({ts:%b %-d, %H:%M} UTC)"
+        )
+    else:
+        lines.append("Closest miss (last 24h): no data yet")
+
+    return lines
+
+
 class TelegramNotifier:
     def __init__(self):
         self._api_base = f"https://api.telegram.org/bot{config.TELEGRAM_API_BOT}"
@@ -90,49 +129,18 @@ class TelegramNotifier:
             self._send(chat_id, "Not logged in - send /login <password> first.")
             return
 
-        stats = logger.get_report_stats()
         lines = [
             "📊 ARB_STOCK Report",
+            f"Threshold: {config.MIN_PROFIT_THRESHOLD * 100:.4f}% (net of fees, both detectors)",
             "",
-            f"Opportunities: {stats['total']} total, {stats['last_24h']} in the last 24h",
-            f"Threshold: {config.MIN_PROFIT_THRESHOLD * 100:.4f}%",
+            "── Triangular (Binance) ──",
+            *_format_report_section(logger, "triangular"),
             "",
+            "── Cross-Exchange (Binance vs Crypto.com) ──",
+            *_format_report_section(logger, "cross_exchange"),
+            "",
+            f"Subscribers: {len(logger.get_subscribers())}",
         ]
-
-        if stats["latest"]:
-            direction, profit_pct, profit_usdt, ts = stats["latest"]
-            lines.append(
-                f"Most recent: {direction}\n"
-                f"  {profit_pct * 100:.4f}% (${profit_usdt:.2f}) — {_format_ago(ts)}"
-            )
-        else:
-            lines.append("Most recent: none logged yet")
-        lines.append("")
-
-        if stats["best"]:
-            direction, profit_pct, profit_usdt, ts = stats["best"]
-            lines.append(
-                f"Best ever: {direction}\n"
-                f"  {profit_pct * 100:.4f}% (${profit_usdt:.2f}) — {ts:%b %-d, %H:%M} UTC"
-            )
-        else:
-            lines.append("Best ever: none logged yet")
-        lines.append("")
-
-        closest = logger.get_closest_miss_24h()
-        if closest:
-            direction, profit_pct, profit_usdt, ts = closest
-            shortfall = config.MIN_PROFIT_THRESHOLD - profit_pct
-            lines.append(
-                f"Closest miss (last 24h): {direction}\n"
-                f"  {profit_pct * 100:.4f}% — {shortfall * 100:.4f}% short of threshold\n"
-                f"  {_format_ago(ts)} ({ts:%b %-d, %H:%M} UTC)"
-            )
-        else:
-            lines.append("Closest miss (last 24h): no data yet")
-        lines.append("")
-
-        lines.append(f"Subscribers: {stats['subscribers']}")
 
         self._send(chat_id, "\n".join(lines))
 

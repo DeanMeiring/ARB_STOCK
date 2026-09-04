@@ -1,10 +1,15 @@
 """
 Postgres logging for detected arbitrage opportunities and Telegram subscribers.
 
-This is the "evidence" layer - every time the calculator finds a loop that
-clears the profit threshold, we log it here with full price context. Over
-time this becomes a real dataset you can analyze: how often do opportunities
-appear, how big are they, do they cluster around volatility spikes, etc.
+This is the "evidence" layer - every time a calculator finds a loop (or a
+cross-exchange leg) that clears the profit threshold, we log it here with
+full price context. Over time this becomes a real dataset you can analyze:
+how often do opportunities appear, how big are they, do they cluster around
+volatility spikes, etc.
+
+Every opportunity/near-miss row carries a `source` - 'triangular' (the
+original Binance-only BTC/ETH/USDT loop) or 'cross_exchange' (Binance vs
+Crypto.com) - so the two detectors' results stay clearly separated.
 
 Uses config.DATABASE_URL (Railway's Postgres add-on, injected automatically).
 """
@@ -35,12 +40,19 @@ def init_db():
             profit_usdt DOUBLE PRECISION
         )
     """)
+    # ADD COLUMN IF NOT EXISTS so this stays safe to run against the
+    # already-populated production table, not just a fresh one.
+    cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'triangular'")
+    cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS cryptocom_bid DOUBLE PRECISION")
+    cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS cryptocom_ask DOUBLE PRECISION")
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS telegram_subscribers (
             chat_id BIGINT PRIMARY KEY,
             authorized_at TIMESTAMPTZ NOT NULL
         )
     """)
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS near_misses (
             id SERIAL PRIMARY KEY,
@@ -50,28 +62,38 @@ def init_db():
             profit_usdt DOUBLE PRECISION
         )
     """)
+    cur.execute("ALTER TABLE near_misses ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'triangular'")
+
     conn.commit()
     cur.close()
     conn.close()
 
 
-def log_opportunity(result, btcusdt, ethbtc, ethusdt):
+def log_opportunity(result, source, btcusdt=None, ethbtc=None, ethusdt=None, cryptocom=None):
+    """
+    source: 'triangular' or 'cross_exchange'.
+    Pass btcusdt/ethbtc/ethusdt for a triangular result, or btcusdt/cryptocom
+    for a cross-exchange one - whichever don't apply stay NULL in the row.
+    """
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO opportunities (
-            timestamp, direction,
+            timestamp, direction, source,
             btcusdt_bid, btcusdt_ask,
             ethbtc_bid, ethbtc_ask,
             ethusdt_bid, ethusdt_ask,
+            cryptocom_bid, cryptocom_ask,
             start_usdt, end_usdt, profit_pct, profit_usdt
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (
         datetime.now(timezone.utc),
         result.direction,
-        btcusdt.bid, btcusdt.ask,
-        ethbtc.bid, ethbtc.ask,
-        ethusdt.bid, ethusdt.ask,
+        source,
+        btcusdt.bid if btcusdt else None, btcusdt.ask if btcusdt else None,
+        ethbtc.bid if ethbtc else None, ethbtc.ask if ethbtc else None,
+        ethusdt.bid if ethusdt else None, ethusdt.ask if ethusdt else None,
+        cryptocom.bid if cryptocom else None, cryptocom.ask if cryptocom else None,
         result.start_usdt, result.end_usdt,
         result.profit_pct, result.profit_usdt,
     ))
@@ -105,7 +127,7 @@ def get_subscribers() -> list:
     return rows
 
 
-def log_near_miss(direction: str, profit_pct: float, profit_usdt: float):
+def log_near_miss(direction: str, profit_pct: float, profit_usdt: float, source: str = "triangular"):
     """
     Record the best (highest profit_pct) sub-threshold result seen in a
     sampling window - see main.py's periodic flush. Not written per-tick,
@@ -114,58 +136,55 @@ def log_near_miss(direction: str, profit_pct: float, profit_usdt: float):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO near_misses (timestamp, direction, profit_pct, profit_usdt)
-        VALUES (%s, %s, %s, %s)
-    """, (datetime.now(timezone.utc), direction, profit_pct, profit_usdt))
+        INSERT INTO near_misses (timestamp, direction, profit_pct, profit_usdt, source)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (datetime.now(timezone.utc), direction, profit_pct, profit_usdt, source))
     conn.commit()
     cur.close()
     conn.close()
 
 
-def get_closest_miss_24h():
-    """Best (highest profit_pct) sampled near-miss in the last 24h, or None."""
+def get_closest_miss_24h(source: str = "triangular"):
+    """Best (highest profit_pct) sampled near-miss in the last 24h for this source, or None."""
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
         SELECT direction, profit_pct, profit_usdt, timestamp
         FROM near_misses
-        WHERE timestamp > NOW() - INTERVAL '24 hours'
+        WHERE timestamp > NOW() - INTERVAL '24 hours' AND source = %s
         ORDER BY profit_pct DESC LIMIT 1
-    """)
+    """, (source,))
     row = cur.fetchone()
     cur.close()
     conn.close()
     return row
 
 
-def get_report_stats() -> dict:
-    """Summary stats for the /report Telegram command."""
+def get_report_stats(source: str = "triangular") -> dict:
+    """Summary stats for the /report Telegram command, scoped to one source."""
     conn = _connect()
     cur = conn.cursor()
 
-    cur.execute("SELECT COUNT(*) FROM opportunities")
+    cur.execute("SELECT COUNT(*) FROM opportunities WHERE source = %s", (source,))
     total = cur.fetchone()[0]
 
     cur.execute("""
         SELECT COUNT(*) FROM opportunities
-        WHERE timestamp > NOW() - INTERVAL '24 hours'
-    """)
+        WHERE timestamp > NOW() - INTERVAL '24 hours' AND source = %s
+    """, (source,))
     last_24h = cur.fetchone()[0]
 
     cur.execute("""
         SELECT direction, profit_pct, profit_usdt, timestamp
-        FROM opportunities ORDER BY timestamp DESC LIMIT 1
-    """)
+        FROM opportunities WHERE source = %s ORDER BY timestamp DESC LIMIT 1
+    """, (source,))
     latest = cur.fetchone()
 
     cur.execute("""
         SELECT direction, profit_pct, profit_usdt, timestamp
-        FROM opportunities ORDER BY profit_pct DESC LIMIT 1
-    """)
+        FROM opportunities WHERE source = %s ORDER BY profit_pct DESC LIMIT 1
+    """, (source,))
     best = cur.fetchone()
-
-    cur.execute("SELECT COUNT(*) FROM telegram_subscribers")
-    subscribers = cur.fetchone()[0]
 
     cur.close()
     conn.close()
@@ -174,5 +193,4 @@ def get_report_stats() -> dict:
         "last_24h": last_24h,
         "latest": latest,
         "best": best,
-        "subscribers": subscribers,
     }

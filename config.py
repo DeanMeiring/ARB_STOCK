@@ -18,7 +18,12 @@ SYMBOLS = [LEG_1, LEG_2, LEG_3]
 # Binance retail spot taker fee is 0.1% (0.001) per trade as of writing.
 # If you hold BNB for fee discount, retail effective rate is ~0.075% (0.00075).
 # CHECK CURRENT RATES on Binance before assuming this - fee schedules change.
-TAKER_FEE = 0.001
+# Only set USE_BNB_FEE_DISCOUNT=true if you actually hold BNB AND have "Pay
+# fees with BNB" enabled in Binance settings - this code has no way to verify
+# either from here, it just changes what rate gets assumed in the math.
+import os
+USE_BNB_FEE_DISCOUNT = os.environ.get("USE_BNB_FEE_DISCOUNT", "false").strip().lower() == "true"
+TAKER_FEE = 0.00075 if USE_BNB_FEE_DISCOUNT else 0.001
 
 # --- Profit threshold ---
 # Minimum theoretical profit (as a fraction, e.g. 0.001 = 0.1%) before we
@@ -44,8 +49,19 @@ LOG_ALL_TICKS = False  # if True, logs every price update, not just opportunitie
 # Postgres (Railway add-on) - opportunities and Telegram subscribers live here now.
 # Railway injects this automatically via the DATABASE_URL reference variable
 # once the Postgres service is attached - never hardcode a connection string.
-import os
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+# --- Cross-exchange (Binance vs Crypto.com) ---
+# Same BTC/USDT pair on a second venue - detection/logging only, same as the
+# triangular side. No API key needed: this only reads Crypto.com's public
+# ticker endpoint, nothing authenticated.
+CRYPTOCOM_REST_BASE = "https://api.crypto.com/exchange/v1/public"
+CRYPTOCOM_SYMBOL = "BTC_USDT"  # compared against Binance's BTCUSDT
+# Crypto.com's standard retail taker fee is much higher than Binance's (~0.4%
+# vs ~0.1%) - check your actual account tier, this varies a lot with volume/
+# CRO stake and materially changes what counts as a real opportunity here.
+CRYPTOCOM_TAKER_FEE = 0.0040
+CRYPTOCOM_POLL_SECONDS = 2  # REST polling, not push-based like Binance's WS
 
 # --- Telegram notifications ---
 # Bot token from @BotFather. Anyone who messages the bot the right password
