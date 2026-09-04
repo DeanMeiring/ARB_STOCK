@@ -117,6 +117,8 @@ def _notify_subscribers(text: str):
     repeatedly come back empty for this service's quick one-off deploys, so
     Telegram is the reliable channel for both results and failures here."""
     if not config.TELEGRAM_API_BOT:
+        print("TELEGRAM_API_BOT not set on this service - skipping direct Telegram send "
+              "(the run's outcome is still recorded in Postgres via log_training_run).")
         return
     try:
         subscribers = logger.get_subscribers()
@@ -153,16 +155,29 @@ def main():
     print(summary)
     _notify_subscribers(summary)
 
+    try:
+        logger.log_training_run("success", summary)
+    except Exception as e:
+        print(f"Couldn't record training run in Postgres: {e}")
+
 
 if __name__ == "__main__":
     try:
         main()
     except Exception:
-        # Surface the failure over Telegram too, not just stderr - this
-        # service's deploy logs have repeatedly come back empty for quick
-        # runs via Railway's log API, so a crash here was previously
-        # invisible: it happened, but nothing recorded why.
+        # Surface the failure two ways, neither of which depends on
+        # Railway's log API (repeatedly empty for this service's quick
+        # runs): Telegram, which can itself silently no-op if this
+        # service's own TELEGRAM_API_BOT var is missing/wrong (a separate
+        # var from the main bot's), and Postgres, which is always reachable
+        # once the process got this far - the main bot's already-proven
+        # Telegram integration can then read training_runs back via
+        # /trainstatus regardless of what's wrong here.
         tb = traceback.format_exc()
         print(tb)
         _notify_subscribers(f"🚨 Model training run FAILED:\n\n{tb}")
+        try:
+            logger.log_training_run("failed", tb)
+        except Exception as e:
+            print(f"Couldn't record failed training run in Postgres either: {e}")
         sys.exit(1)

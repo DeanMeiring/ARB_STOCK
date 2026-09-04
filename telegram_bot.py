@@ -117,6 +117,8 @@ class TelegramNotifier:
             self._handle_report(chat_id)
         elif text.startswith("/predict"):
             self._handle_predict(chat_id)
+        elif text.startswith("/trainstatus"):
+            self._handle_trainstatus(chat_id)
 
     def _handle_login(self, chat_id, text):
         import logger  # deferred to avoid a hard import-time DB dependency
@@ -168,6 +170,27 @@ class TelegramNotifier:
             return
         import price_predictor  # deferred: pandas/xgboost only load when actually needed
         self._send(chat_id, price_predictor.predict_latest())
+
+    def _handle_trainstatus(self, chat_id):
+        """Reports the last recorded outcome of the training cron job -
+        read from Postgres (logger.get_latest_training_run), not from the
+        cron service's own Telegram send, which can silently no-op if its
+        TELEGRAM_API_BOT var isn't set up right. Works regardless of that."""
+        import logger
+
+        if chat_id not in logger.get_subscribers():
+            self._send(chat_id, "Not logged in - send /login <password> first.")
+            return
+
+        row = logger.get_latest_training_run()
+        if not row:
+            self._send(chat_id, "No training run recorded yet - the daily cron hasn't run (or reached the point of recording its outcome) since this tracking was added.")
+            return
+
+        ran_at, status, detail = row
+        header = f"Last training run: {status.upper()} — {_format_ago(ran_at)} ({ran_at:%b %-d, %H:%M} UTC)"
+        body = f"\n\n{detail}" if detail else ""
+        self._send(chat_id, (header + body)[:4096])
 
     def _handle_callback(self, callback):
         callback_id = callback["id"]

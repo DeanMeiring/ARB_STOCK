@@ -94,6 +94,24 @@ def init_db():
         )
     """)
 
+    # One row per training-cron run (success or failure) - Railway's get-logs
+    # has repeatedly come back empty for this service's quick one-off
+    # deploys, and the cron service's own Telegram send can silently no-op
+    # if its TELEGRAM_API_BOT var is missing/wrong (a separate var from the
+    # main bot's - Railway doesn't share plain env vars between services).
+    # Postgres always works when the script got far enough to reach it, and
+    # /trainstatus (served by the main bot, whose Telegram config is proven
+    # working) reads it back - a diagnostic channel that doesn't depend on
+    # anything specific to the cron service.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS training_runs (
+            id SERIAL PRIMARY KEY,
+            ran_at TIMESTAMPTZ NOT NULL,
+            status TEXT NOT NULL,
+            detail TEXT
+        )
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -255,6 +273,30 @@ def get_report_stats(source: str = "triangular") -> dict:
         "latest": latest,
         "best": best,
     }
+
+
+def log_training_run(status: str, detail: str = None):
+    """status: 'success' or 'failed'. One row per run of analyze_opportunity_model.py."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO training_runs (ran_at, status, detail)
+        VALUES (%s, %s, %s)
+    """, (datetime.now(timezone.utc), status, detail))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_latest_training_run():
+    """Returns (ran_at, status, detail) for the most recent training run, or None if it's never run."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT ran_at, status, detail FROM training_runs ORDER BY ran_at DESC LIMIT 1")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
 
 
 def log_candle(symbol: str, candle_start, open_: float, high: float, low: float, close: float, tick_count: int):
