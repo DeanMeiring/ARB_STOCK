@@ -4,7 +4,9 @@ Minimal Telegram notifier - no execution, no external bot framework.
 Polls Telegram's getUpdates for incoming messages. Anyone who sends
 /login <TELEGRAM_LOGIN_PASSWORD> gets their chat added to logger's
 telegram_subscribers table and starts receiving opportunity alerts.
-/report (logged-in only) replies with summary stats from Postgres.
+/report (logged-in only) replies with summary stats from Postgres, then
+offers a BTC price prediction via an inline "Yes/No" button - /predict
+does the same thing directly, without needing to go through /report first.
 There is no way to remove a subscriber yet - if that's ever needed,
 delete the row directly in Postgres.
 
@@ -97,6 +99,12 @@ class TelegramNotifier:
 
     def _handle_update(self, update):
         self._offset = update["update_id"] + 1
+
+        callback = update.get("callback_query")
+        if callback:
+            self._handle_callback(callback)
+            return
+
         message = update.get("message") or {}
         text = (message.get("text") or "").strip()
         chat_id = message.get("chat", {}).get("id")
@@ -107,6 +115,8 @@ class TelegramNotifier:
             self._handle_login(chat_id, text)
         elif text.startswith("/report"):
             self._handle_report(chat_id)
+        elif text.startswith("/predict"):
+            self._handle_predict(chat_id)
 
     def _handle_login(self, chat_id, text):
         import logger  # deferred to avoid a hard import-time DB dependency
@@ -143,12 +153,50 @@ class TelegramNotifier:
         ]
 
         self._send(chat_id, "\n".join(lines))
+        self._send(chat_id, "Want a BTC price prediction from the trend model?", reply_markup={
+            "inline_keyboard": [[
+                {"text": "Yes, predict", "callback_data": "predict_btc"},
+                {"text": "No thanks", "callback_data": "predict_no"},
+            ]]
+        })
 
-    def _send(self, chat_id, text):
+    def _handle_predict(self, chat_id):
+        import logger
+
+        if chat_id not in logger.get_subscribers():
+            self._send(chat_id, "Not logged in - send /login <password> first.")
+            return
+        import price_predictor  # deferred: pandas/xgboost only load when actually needed
+        self._send(chat_id, price_predictor.predict_latest())
+
+    def _handle_callback(self, callback):
+        callback_id = callback["id"]
+        chat_id = callback["message"]["chat"]["id"]
+        data = callback.get("data", "")
+
+        self._answer_callback(callback_id)  # stops the button's loading spinner
+
+        if data == "predict_btc":
+            self._handle_predict(chat_id)
+        # "predict_no" needs no further action
+
+    def _answer_callback(self, callback_id, text=None):
         try:
+            payload = {"callback_query_id": callback_id}
+            if text:
+                payload["text"] = text
+            requests.post(f"{self._api_base}/answerCallbackQuery", json=payload, timeout=10)
+        except Exception as e:
+            print(f"[telegram] answerCallbackQuery error: {e}")
+
+    def _send(self, chat_id, text, reply_markup=None):
+        try:
+            payload = {"chat_id": chat_id, "text": text}
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
             requests.post(
                 f"{self._api_base}/sendMessage",
-                json={"chat_id": chat_id, "text": text},
+                json=payload,
                 timeout=10,
             )
         except Exception as e:

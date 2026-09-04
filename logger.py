@@ -17,6 +17,7 @@ Uses config.DATABASE_URL (Railway's Postgres add-on, injected automatically).
 from datetime import datetime, timezone
 import psycopg2
 import psycopg2.extras
+from psycopg2.extras import Json
 import config
 
 
@@ -81,6 +82,18 @@ def init_db():
         )
     """)
 
+    # Trained model artifacts - Railway's filesystem doesn't persist across
+    # deploys/restarts, so the serialized model lives here instead of on
+    # disk. One row per named model, overwritten on each retrain.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS trained_models (
+            model_name TEXT PRIMARY KEY,
+            trained_at TIMESTAMPTZ NOT NULL,
+            model_blob BYTEA NOT NULL,
+            metadata JSONB
+        )
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -142,6 +155,37 @@ def get_subscribers() -> list:
     cur.close()
     conn.close()
     return rows
+
+
+def save_model(model_name: str, blob: bytes, metadata: dict = None):
+    """Overwrite the stored artifact for model_name with a freshly trained one."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO trained_models (model_name, trained_at, model_blob, metadata)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (model_name) DO UPDATE SET
+            trained_at = EXCLUDED.trained_at,
+            model_blob = EXCLUDED.model_blob,
+            metadata = EXCLUDED.metadata
+    """, (model_name, datetime.now(timezone.utc), psycopg2.Binary(blob), Json(metadata) if metadata else None))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def load_model(model_name: str):
+    """Returns (blob: bytes, metadata: dict, trained_at) or None if never trained."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT model_blob, metadata, trained_at FROM trained_models WHERE model_name = %s", (model_name,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return None
+    blob, metadata, trained_at = row
+    return bytes(blob), metadata, trained_at
 
 
 def log_near_miss(direction: str, profit_pct: float, profit_usdt: float, source: str = "triangular"):

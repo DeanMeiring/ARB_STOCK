@@ -116,7 +116,12 @@ def main():
         train_and_report("triangular", "Triangular (Binance)"),
         train_and_report("cross_exchange", "Cross-Exchange (Binance vs Crypto.com)"),
     ]
-    summary = "🤖 Opportunity-Likelihood Model Report\n\n" + "\n\n".join(results)
+
+    print("Training price-trend model...")
+    import analyze_price_trend_model
+    results.append(analyze_price_trend_model.train())
+
+    summary = "🤖 Model Training Report\n\n" + "\n\n".join(results)
     print(summary)
 
     subscribers = logger.get_subscribers()
