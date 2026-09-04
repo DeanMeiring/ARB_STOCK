@@ -6,7 +6,12 @@ No authentication needed - this is public market data. Polled on a timer
 since the exact WS message schema wasn't verifiable from this environment
 and a REST poll is simpler to get right and to reason about when it fails.
 
-Docs: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html#public-get-ticker
+Docs: https://exchange-docs.crypto.com/exchange/v1/rest-ws/index.html#public-get-tickers
+
+Endpoint is "get-tickers" (plural) even when filtered to one instrument via
+instrument_name - the first deploy 404'd against "get-ticker" (singular),
+confirmed against the real API from Railway's logs (this domain is blocked
+from the dev sandbox, so that deploy was the only way to verify it).
 """
 
 import requests
@@ -20,7 +25,7 @@ class CryptoComError(Exception):
 
 def get_ticker(symbol: str) -> BookTicker:
     resp = requests.get(
-        f"{config.CRYPTOCOM_REST_BASE}/get-ticker",
+        f"{config.CRYPTOCOM_REST_BASE}/get-tickers",
         params={"instrument_name": symbol},
         timeout=10,
     )
