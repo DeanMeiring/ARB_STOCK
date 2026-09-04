@@ -64,6 +64,22 @@ def init_db():
     """)
     cur.execute("ALTER TABLE near_misses ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'triangular'")
 
+    # 1-minute OHLC candles built from mid-price ((bid+ask)/2), one row per
+    # symbol per minute - this is the actual price history for training a
+    # trend model later. Not written per-tick (hundreds/sec); main.py builds
+    # each candle in memory and flushes it once per minute.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS market_candles (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            candle_start TIMESTAMPTZ NOT NULL,
+            open DOUBLE PRECISION, high DOUBLE PRECISION,
+            low DOUBLE PRECISION, close DOUBLE PRECISION,
+            tick_count INTEGER,
+            UNIQUE (symbol, candle_start)
+        )
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
@@ -194,3 +210,16 @@ def get_report_stats(source: str = "triangular") -> dict:
         "latest": latest,
         "best": best,
     }
+
+
+def log_candle(symbol: str, candle_start, open_: float, high: float, low: float, close: float, tick_count: int):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO market_candles (symbol, candle_start, open, high, low, close, tick_count)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (symbol, candle_start) DO NOTHING
+    """, (symbol, candle_start, open_, high, low, close, tick_count))
+    conn.commit()
+    cur.close()
+    conn.close()

@@ -48,6 +48,11 @@ best_miss = {
 # trigger the same "feed is stuck" alert as the primary Binance feed dying.
 last_tick_at = {"time": None}
 
+# 1-minute OHLC candles (built from mid-price) in progress, per symbol -
+# this is the actual price history for training a trend model later.
+# Flushed to Postgres every 60s by flush_candles_periodically.
+candles_in_progress = {}
+
 
 def _track_near_miss(source, result):
     slot = best_miss[source]
@@ -55,6 +60,21 @@ def _track_near_miss(source, result):
         slot["direction"] = result.direction
         slot["profit_pct"] = result.profit_pct
         slot["profit_usdt"] = result.profit_usdt
+
+
+def _update_candle(symbol, bid, ask):
+    price = (bid + ask) / 2
+    c = candles_in_progress.get(symbol)
+    if c is None:
+        candles_in_progress[symbol] = {
+            "open": price, "high": price, "low": price, "close": price,
+            "count": 1, "start": datetime.now(timezone.utc),
+        }
+    else:
+        c["high"] = max(c["high"], price)
+        c["low"] = min(c["low"], price)
+        c["close"] = price
+        c["count"] += 1
 
 
 async def on_price_update(latest: dict):
@@ -67,6 +87,10 @@ async def on_price_update(latest: dict):
 
     if not (btcusdt and ethbtc and ethusdt):
         return  # still waiting on one of the three streams
+
+    _update_candle("BTCUSDT", btcusdt.bid, btcusdt.ask)
+    _update_candle("ETHBTC", ethbtc.bid, ethbtc.ask)
+    _update_candle("ETHUSDT", ethusdt.bid, ethusdt.ask)
 
     fwd, rev = check_both_directions(btcusdt, ethbtc, ethusdt)
 
@@ -119,6 +143,7 @@ async def cross_exchange_watch():
                 continue  # Binance side not warmed up yet
 
             cryptocom_ticker = await asyncio.to_thread(cryptocom_client.get_ticker, config.CRYPTOCOM_SYMBOL)
+            _update_candle("CRYPTOCOM_BTC_USDT", cryptocom_ticker.bid, cryptocom_ticker.ask)
 
             for result in check_cross_exchange(binance_ticker, cryptocom_ticker):
                 if result.is_opportunity:
@@ -147,6 +172,15 @@ async def flush_near_miss_periodically():
                 slot["direction"] = None
                 slot["profit_pct"] = None
                 slot["profit_usdt"] = None
+
+
+async def flush_candles_periodically():
+    """Every 60s, close out each symbol's in-progress candle and persist it."""
+    while True:
+        await asyncio.sleep(60)
+        for symbol, c in list(candles_in_progress.items()):
+            logger.log_candle(symbol, c["start"], c["open"], c["high"], c["low"], c["close"], c["count"])
+            del candles_in_progress[symbol]
 
 
 async def watchdog():
@@ -204,6 +238,7 @@ async def main():
         cross_exchange_watch(),
         notifier.poll_forever(),
         flush_near_miss_periodically(),
+        flush_candles_periodically(),
         watchdog(),
     )
 
