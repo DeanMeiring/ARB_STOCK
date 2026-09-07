@@ -153,6 +153,8 @@ class TelegramNotifier:
             "",
             f"Subscribers: {len(logger.get_subscribers())}",
         ]
+        if config.DASHBOARD_URL:
+            lines += ["", f"📈 Live dashboard: {config.DASHBOARD_URL}"]
 
         self._send(chat_id, "\n".join(lines))
         self._send(chat_id, "Want price-trend predictions across all tracked coins?", reply_markup={
@@ -169,7 +171,10 @@ class TelegramNotifier:
             self._send(chat_id, "Not logged in - send /login <password> first.")
             return
         import price_predictor  # deferred: pandas/xgboost only load when actually needed
-        self._send(chat_id, price_predictor.predict_all_text())
+        text = price_predictor.predict_all_text()
+        if config.DASHBOARD_URL:
+            text += f"\n\n📈 Live dashboard: {config.DASHBOARD_URL}"
+        self._send(chat_id, text)
 
     def _handle_trainstatus(self, chat_id):
         """Reports the last recorded outcome of the training cron job -

@@ -128,7 +128,14 @@ PREDICT_UP_THRESHOLD = 0.65
 DASHBOARD_PORT = int(os.environ.get("PORT", 8080))
 
 # Optional HTTP Basic Auth password protecting the dashboard and its API.
-# Strongly recommended once this is deployed - Railway will expose it on a
-# public URL, otherwise reachable by anyone with the link. Username is fixed
-# as "admin"; leave unset only for local-only use.
+# Username is fixed as "admin". Leave unset only for local-only use - once a
+# public domain exists (RAILWAY_PUBLIC_DOMAIN below), the dashboard is
+# reachable by anyone with the link without this set.
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+
+# Railway sets this automatically once a public domain is generated for this
+# service (Settings -> Networking -> Generate Domain, or via the API) - empty
+# until then, in which case DASHBOARD_URL below is also empty and the
+# Telegram commands just omit the dashboard link.
+RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+DASHBOARD_URL = f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else ""
