@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 import psycopg2
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, accuracy_score
 import xgboost as xgb
 import config
 import logger
@@ -104,6 +104,13 @@ def train_symbol(symbol: str) -> str:
     model.fit(X_train, y_train)
 
     y_prob = model.predict_proba(X_test)[:, 1]
+    y_pred = model.predict(X_test)
+    # accuracy is % of test-set predictions correct at the model's default
+    # 50% cutoff - easier to read than AUC, but tells you less: it doesn't
+    # reward correctly-ranked confidence, and on an imbalanced test set a
+    # trivial "always predict the majority class" model can score high
+    # accuracy while still being useless. Report both, not one or the other.
+    accuracy = accuracy_score(y_test, y_pred)
     try:
         auc = roc_auc_score(y_test, y_prob)
         # some sklearn versions return NaN instead of raising for a
@@ -118,10 +125,13 @@ def train_symbol(symbol: str) -> str:
         auc, auc_str = None, "n/a (test set has no positive examples)"
 
     blob = pickle.dumps(model)
-    logger.save_model(model_name(symbol), blob, {"auc": auc, "rows": len(df), "features": FEATURE_COLS})
+    logger.save_model(model_name(symbol), blob, {
+        "auc": auc, "accuracy": accuracy, "rows": len(df), "features": FEATURE_COLS,
+    })
 
     up_rate = df["target"].mean()
-    return f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% closed up historically, test AUC {auc_str}"
+    return (f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% closed up historically, "
+            f"test AUC {auc_str}, accuracy {accuracy*100:.1f}%")
 
 
 def train() -> str:

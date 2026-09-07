@@ -18,8 +18,8 @@ from analyze_price_trend_model import FEATURE_COLS, model_name
 
 def predict_symbol(symbol: str):
     """
-    Returns a dict {symbol, prob_up, trained_at, auc} on success, or a
-    plain string explaining why this symbol has no prediction right now
+    Returns a dict {symbol, prob_up, trained_at, auc, accuracy} on success,
+    or a plain string explaining why this symbol has no prediction right now
     (no trained model yet / not enough recent candles).
     """
     saved = logger.load_model(model_name(symbol))
@@ -54,11 +54,15 @@ def predict_symbol(symbol: str):
         return f"{symbol}: not enough recent history to compute features yet"
 
     prob_up = float(model.predict_proba(latest)[0][1])
-    return {"symbol": symbol, "prob_up": prob_up, "trained_at": trained_at, "auc": (metadata or {}).get("auc")}
+    metadata = metadata or {}
+    return {
+        "symbol": symbol, "prob_up": prob_up, "trained_at": trained_at,
+        "auc": metadata.get("auc"), "accuracy": metadata.get("accuracy"),
+    }
 
 
 def predict_all() -> list:
-    """[{symbol, prob_up, trained_at, auc}, ...] for every symbol with a usable model, sorted by prob_up desc."""
+    """[{symbol, prob_up, trained_at, auc, accuracy}, ...] for every symbol with a usable model, sorted by prob_up desc."""
     results = [predict_symbol(s) for s in config.PREDICT_SYMBOLS]
     ok = [r for r in results if isinstance(r, dict)]
     ok.sort(key=lambda r: r["prob_up"], reverse=True)
@@ -78,7 +82,8 @@ def predict_all_text() -> str:
     lines = ["🔮 Price-trend predictions (next candle, probability of going up):"]
     for r in ok:
         marker = " ⬆️" if r["prob_up"] >= config.PREDICT_UP_THRESHOLD else ""
-        lines.append(f"  {r['symbol']}: {r['prob_up']*100:.0f}%{marker}")
+        accuracy_str = f", model accuracy {r['accuracy']*100:.0f}%" if r.get("accuracy") is not None else ""
+        lines.append(f"  {r['symbol']}: {r['prob_up']*100:.0f}%{marker}{accuracy_str}")
 
     hits = [r for r in ok if r["prob_up"] >= config.PREDICT_UP_THRESHOLD]
     if hits:

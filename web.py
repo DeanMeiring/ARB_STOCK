@@ -93,6 +93,9 @@ def api_predictions(_auth=Depends(require_auth)):
     import price_predictor
     results = price_predictor.predict_all()
     return [
-        {"symbol": r["symbol"], "prob_up": r["prob_up"], "auc": r["auc"], "trained_at": r["trained_at"].isoformat()}
+        {
+            "symbol": r["symbol"], "prob_up": r["prob_up"], "auc": r["auc"],
+            "accuracy": r["accuracy"], "trained_at": r["trained_at"].isoformat(),
+        }
         for r in results
     ]
