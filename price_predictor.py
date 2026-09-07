@@ -48,14 +48,13 @@ def predict_latest() -> str:
         return "Not enough recent history to compute features yet."
 
     prob_up = float(model.predict_proba(latest)[0][1])
-    direction = "UP" if prob_up > 0.5 else "DOWN"
     confidence = max(prob_up, 1 - prob_up)
+    action = "BUY" if prob_up > 0.5 else "SHORT"
     auc = (metadata or {}).get("auc")
-    auc_str = f", test AUC {auc:.3f} when trained" if auc is not None else ""
+    auc_str = f" (test AUC {auc:.3f} when trained)" if auc is not None else ""
 
     return (
-        f"🔮 {SYMBOL} next-candle prediction: {direction}\n"
-        f"Confidence: {confidence*100:.1f}%\n"
-        f"Model trained {trained_at:%b %-d, %H:%M} UTC{auc_str}\n"
+        f"🔮 {SYMBOL}: {confidence*100:.0f}% confidence to {action} here{auc_str}\n"
+        f"Model last trained {trained_at:%b %-d, %H:%M} UTC\n"
         f"(rough statistical model on limited data - not financial advice)"
     )
