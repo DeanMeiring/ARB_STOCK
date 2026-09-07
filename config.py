@@ -110,3 +110,14 @@ MAX_DAILY_LOSS_USDT = 3.0            # ~12% of capital - auto-halt for the day
 MANUAL_REVIEW_LOSS_THRESHOLD_USDT = 5.0  # ~20% cumulative - no auto-reset past this, needs a human look
 MAX_TRADES_PER_DAY = 10              # runaway-loop breaker, not a real constraint at this scale
 MIN_SECONDS_BETWEEN_TRADES = 5       # guards against a tick burst firing several trades at once
+
+# --- Web dashboard ---
+# Railway injects PORT automatically once a public domain is generated for
+# this service; falls back to 8080 for local runs.
+DASHBOARD_PORT = int(os.environ.get("PORT", 8080))
+
+# Optional HTTP Basic Auth password protecting the dashboard and its API.
+# Strongly recommended once this is deployed - Railway will expose it on a
+# public URL, otherwise reachable by anyone with the link. Username is fixed
+# as "admin"; leave unset only for local-only use.
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()

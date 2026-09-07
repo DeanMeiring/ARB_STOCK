@@ -312,6 +312,117 @@ def log_candle(symbol: str, candle_start, open_: float, high: float, low: float,
     conn.close()
 
 
+def get_recent_opportunities(hours: int = 24, source: str = None) -> list:
+    """JSON-friendly rows for the dashboard's opportunities chart."""
+    conn = _connect()
+    cur = conn.cursor()
+    if source:
+        cur.execute("""
+            SELECT timestamp, direction, source, profit_pct, profit_usdt
+            FROM opportunities
+            WHERE timestamp > NOW() - make_interval(hours => %s) AND source = %s
+            ORDER BY timestamp ASC
+        """, (hours, source))
+    else:
+        cur.execute("""
+            SELECT timestamp, direction, source, profit_pct, profit_usdt
+            FROM opportunities
+            WHERE timestamp > NOW() - make_interval(hours => %s)
+            ORDER BY timestamp ASC
+        """, (hours,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [
+        {"timestamp": ts.isoformat(), "direction": direction, "source": src, "profit_pct": pct, "profit_usdt": usdt}
+        for ts, direction, src, pct, usdt in rows
+    ]
+
+
+def get_recent_near_misses(hours: int = 24, source: str = None) -> list:
+    """JSON-friendly rows for the dashboard's near-miss trend chart."""
+    conn = _connect()
+    cur = conn.cursor()
+    if source:
+        cur.execute("""
+            SELECT timestamp, direction, source, profit_pct, profit_usdt
+            FROM near_misses
+            WHERE timestamp > NOW() - make_interval(hours => %s) AND source = %s
+            ORDER BY timestamp ASC
+        """, (hours, source))
+    else:
+        cur.execute("""
+            SELECT timestamp, direction, source, profit_pct, profit_usdt
+            FROM near_misses
+            WHERE timestamp > NOW() - make_interval(hours => %s)
+            ORDER BY timestamp ASC
+        """, (hours,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [
+        {"timestamp": ts.isoformat(), "direction": direction, "source": src, "profit_pct": pct, "profit_usdt": usdt}
+        for ts, direction, src, pct, usdt in rows
+    ]
+
+
+def get_recent_candles(symbol: str, hours: int = 24) -> list:
+    """JSON-friendly close-price rows for the dashboard's price chart."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT candle_start, close
+        FROM market_candles
+        WHERE symbol = %s AND candle_start > NOW() - make_interval(hours => %s)
+        ORDER BY candle_start ASC
+    """, (symbol, hours))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [{"timestamp": ts.isoformat(), "close": close} for ts, close in rows]
+
+
+def get_trained_models_json() -> list:
+    """One row per model in trained_models, JSON-friendly, no blob included."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT model_name, trained_at, metadata FROM trained_models ORDER BY model_name")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [
+        {"model_name": name, "trained_at": trained_at.isoformat(), "metadata": metadata}
+        for name, trained_at, metadata in rows
+    ]
+
+
+def get_stats_json() -> dict:
+    """Everything the dashboard's stat tiles need, in one call."""
+
+    def _row(row):
+        if not row:
+            return None
+        direction, profit_pct, profit_usdt, ts = row
+        return {"direction": direction, "profit_pct": profit_pct, "profit_usdt": profit_usdt, "timestamp": ts.isoformat()}
+
+    def _source_stats(source):
+        s = get_report_stats(source)
+        return {"total": s["total"], "last_24h": s["last_24h"], "latest": _row(s["latest"]), "best": _row(s["best"])}
+
+    training_run = get_latest_training_run()
+    training_run_json = None
+    if training_run:
+        ran_at, status, detail = training_run
+        training_run_json = {"ran_at": ran_at.isoformat(), "status": status, "detail": detail}
+
+    return {
+        "triangular": _source_stats("triangular"),
+        "cross_exchange": _source_stats("cross_exchange"),
+        "subscribers": len(get_subscribers()),
+        "latest_training_run": training_run_json,
+    }
+
+
 def bulk_log_candles(rows: list):
     """
     rows: list of (symbol, candle_start, open, high, low, close, tick_count)

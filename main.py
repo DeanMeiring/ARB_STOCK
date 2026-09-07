@@ -18,12 +18,14 @@ Run:
 
 import asyncio
 from datetime import datetime, timezone
+import uvicorn
 import config
 import logger
 from binance_client import BinanceBookTickerStream
 from arb_calculator import check_both_directions, check_cross_exchange
 import cryptocom_client
 from telegram_bot import TelegramNotifier
+from web import app as dashboard_app
 
 if config.EXECUTE_TRADES:
     import executor
@@ -227,6 +229,19 @@ async def watchdog():
             last_heartbeat_at = now
 
 
+async def dashboard_server():
+    """Serves web/dashboard.html + its JSON API in-process, same event loop."""
+    server = uvicorn.Server(uvicorn.Config(
+        dashboard_app, host="0.0.0.0", port=config.DASHBOARD_PORT, log_level="warning",
+    ))
+    if not config.DASHBOARD_PASSWORD:
+        print(f"[dashboard] serving on :{config.DASHBOARD_PORT} - NO PASSWORD SET, "
+              f"set DASHBOARD_PASSWORD before this is reachable on a public URL")
+    else:
+        print(f"[dashboard] serving on :{config.DASHBOARD_PORT} (password protected)")
+    await server.serve()
+
+
 async def main():
     logger.init_db()
     if config.EXECUTE_TRADES:
@@ -240,6 +255,7 @@ async def main():
         flush_near_miss_periodically(),
         flush_candles_periodically(),
         watchdog(),
+        dashboard_server(),
     )
 
 
