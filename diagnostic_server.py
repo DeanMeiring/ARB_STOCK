@@ -109,6 +109,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # Deploy logs are only ever captured for genuinely long-running
+    # processes on this service - confirmed by "Starting Container" /
+    # "listening" actually showing up here, unlike every quick-exit run of
+    # the training script. So run the check at startup and print it, where
+    # it will actually be visible via get-logs, instead of only on-demand
+    # via the HTTP handler (which still needs a request that reaches it).
+    print("=== STARTUP DIAGNOSTIC ===")
+    print(json.dumps(_gather_status(send_telegram=True), indent=2, default=str))
+    print("=== END STARTUP DIAGNOSTIC ===")
+
     port = int(os.environ.get("PORT", "8080"))
     print(f"Diagnostic server listening on 0.0.0.0:{port}")
     HTTPServer(("0.0.0.0", port), Handler).serve_forever()
