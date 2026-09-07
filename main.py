@@ -34,7 +34,7 @@ if config.EXECUTE_TRADES:
 stats = {"ticks": 0, "opportunities": 0, "cross_exchange_opportunities": 0}
 
 notifier = TelegramNotifier()
-stream = BinanceBookTickerStream(config.SYMBOLS)
+stream = BinanceBookTickerStream(config.SYMBOLS + config.PREDICT_EXTRA_SYMBOLS)
 
 # best sub-threshold result seen since the last flush, per source - not
 # persisted per-tick (hundreds/sec for the triangular side), just sampled
@@ -82,6 +82,13 @@ def _update_candle(symbol, bid, ask):
 async def on_price_update(latest: dict):
     stats["ticks"] += 1
     last_tick_at["time"] = datetime.now(timezone.utc)
+
+    # Extra coins tracked purely for the price-trend model (config.PREDICT_EXTRA_SYMBOLS)
+    # - independent of the triangular detector below, always updated when present.
+    for symbol in config.PREDICT_EXTRA_SYMBOLS:
+        ticker = latest.get(symbol)
+        if ticker:
+            _update_candle(symbol, ticker.bid, ticker.ask)
 
     btcusdt = latest.get(config.LEG_1.upper())
     ethbtc = latest.get(config.LEG_2.upper())

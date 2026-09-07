@@ -79,4 +79,20 @@ def api_models(_auth=Depends(require_auth)):
 @app.get("/api/config")
 def api_config(_auth=Depends(require_auth)):
     """Static thresholds the frontend needs to draw reference lines etc."""
-    return {"min_profit_threshold_pct": config.MIN_PROFIT_THRESHOLD * 100}
+    return {
+        "min_profit_threshold_pct": config.MIN_PROFIT_THRESHOLD * 100,
+        "predict_up_threshold_pct": config.PREDICT_UP_THRESHOLD * 100,
+    }
+
+
+@app.get("/api/predictions")
+def api_predictions(_auth=Depends(require_auth)):
+    """Current price-trend prediction per coin - pandas/xgboost only load
+    when this endpoint is actually hit, same deferred-import pattern as the
+    Telegram /predict handler."""
+    import price_predictor
+    results = price_predictor.predict_all()
+    return [
+        {"symbol": r["symbol"], "prob_up": r["prob_up"], "auc": r["auc"], "trained_at": r["trained_at"].isoformat()}
+        for r in results
+    ]

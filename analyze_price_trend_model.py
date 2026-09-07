@@ -1,12 +1,24 @@
 """
-Trains an XGBoost classifier predicting whether BTCUSDT's next 1-minute
-candle closes higher than the current one, using market_candles history
-(the 30-day backfill plus whatever's accumulated live since).
+Trains an XGBoost classifier per coin (config.PREDICT_SYMBOLS) predicting
+whether its next 1-minute candle closes higher than the current one, using
+market_candles history.
 
-The trained model is saved to Postgres (logger.save_model), not disk -
-Railway's filesystem doesn't persist across deploys/restarts. price_predictor.py
-is the lightweight counterpart that loads it back for on-demand predictions
-from the live bot (via Telegram's /predict), kept in a separate file so the
+BTCUSDT/ETHUSDT get organic candle collection from the triangular detector's
+live WS stream (and can already have 30 days of backfilled depth - see
+backfill_candles.py). The rest of config.PREDICT_SYMBOLS
+(config.PREDICT_EXTRA_SYMBOLS) are subscribed on that same stream purely for
+this model, but a freshly-added symbol won't have organic history yet - this
+auto-backfills 30 days for any symbol short on rows before training, reusing
+backfill_candles.fetch_binance_klines (same Binance historical-klines
+endpoint), so a new coin produces a usable model on its very first run
+instead of needing a manually-remembered separate backfill or days of
+waiting for live accumulation.
+
+Each trained model is saved to Postgres (logger.save_model) - Railway's
+filesystem doesn't persist across deploys/restarts - as its own row, keyed
+by model_name(symbol), not one shared blob. price_predictor.py is the
+lightweight counterpart that loads them back for on-demand predictions from
+the live bot (via Telegram's /predict), kept in a separate file so the
 always-on detector doesn't pay pandas/xgboost's import cost unless someone
 actually asks for a prediction.
 
@@ -14,6 +26,7 @@ Standalone - called from analyze_opportunity_model.py's main() as part of
 the same daily cron run, not scheduled separately.
 """
 
+from datetime import datetime, timedelta, timezone
 import pickle
 import numpy as np
 import pandas as pd
@@ -23,14 +36,17 @@ from sklearn.metrics import roc_auc_score
 import xgboost as xgb
 import config
 import logger
+from backfill_candles import fetch_binance_klines, BACKFILL_DAYS
 
-SYMBOL = "BTCUSDT"
-MODEL_NAME = "price_trend_btcusdt"
 MIN_ROWS = 500
 
 # Shared with price_predictor.py's inference path - keep both in sync if
 # either changes, they must compute features identically.
 FEATURE_COLS = ["return_1", "return_5", "return_15", "volatility_15", "hour_sin", "hour_cos", "day_of_week"]
+
+
+def model_name(symbol: str) -> str:
+    return f"price_trend_{symbol.lower()}"
 
 
 def load_candles(symbol: str) -> pd.DataFrame:
@@ -43,6 +59,17 @@ def load_candles(symbol: str) -> pd.DataFrame:
     # same empty-vs-populated dtype gotcha as analyze_opportunity_model.py
     df["candle_start"] = pd.to_datetime(df["candle_start"], utc=True)
     return df
+
+
+def ensure_backfilled(symbol: str, current_rows: int):
+    """Top up history via Binance's historical klines endpoint if this
+    symbol is short on organically-collected candles - see module docstring."""
+    if current_rows >= MIN_ROWS:
+        return
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=BACKFILL_DAYS)
+    rows = fetch_binance_klines(symbol, int(start.timestamp() * 1000), int(end.timestamp() * 1000))
+    logger.bulk_log_candles(rows)
 
 
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -60,10 +87,14 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def train() -> str:
-    df = load_candles(SYMBOL)
+def train_symbol(symbol: str) -> str:
+    df = load_candles(symbol)
     if len(df) < MIN_ROWS:
-        return f"{SYMBOL} price-trend: only {len(df)} candles so far (need {MIN_ROWS}+) - too early to train."
+        ensure_backfilled(symbol, len(df))
+        df = load_candles(symbol)  # re-read after backfill attempt
+
+    if len(df) < MIN_ROWS:
+        return f"{symbol}: only {len(df)} candles so far (need {MIN_ROWS}+) - too early to train."
 
     df = build_features(df)
     X, y = df[FEATURE_COLS], df["target"]
@@ -87,14 +118,16 @@ def train() -> str:
         auc, auc_str = None, "n/a (test set has no positive examples)"
 
     blob = pickle.dumps(model)
-    logger.save_model(MODEL_NAME, blob, {"auc": auc, "rows": len(df), "features": FEATURE_COLS})
+    logger.save_model(model_name(symbol), blob, {"auc": auc, "rows": len(df), "features": FEATURE_COLS})
 
     up_rate = df["target"].mean()
-    return (
-        f"{SYMBOL} price-trend: {len(df)} candles, {up_rate*100:.1f}% closed up historically.\n"
-        f"  Test AUC: {auc_str} (0.5 = no better than chance)\n"
-        f"  Model saved - available via /predict in Telegram."
-    )
+    return f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% closed up historically, test AUC {auc_str}"
+
+
+def train() -> str:
+    """Trains every symbol in config.PREDICT_SYMBOLS, returns a combined summary."""
+    results = [train_symbol(symbol) for symbol in config.PREDICT_SYMBOLS]
+    return "Price-trend models:\n  " + "\n  ".join(results) + "\n\nAvailable via /predict in Telegram."
 
 
 if __name__ == "__main__":

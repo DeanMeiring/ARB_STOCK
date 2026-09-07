@@ -25,7 +25,10 @@ import config
 import logger
 
 BACKFILL_DAYS = 30
-BINANCE_SYMBOLS = ["BTCUSDT", "ETHBTC", "ETHUSDT"]
+# Triangular symbols (ETHBTC has no price-trend model, only used for the arb
+# loop) plus every coin the price-trend model trains on - deduped, in case
+# of overlap (BTCUSDT/ETHUSDT are in both).
+BINANCE_SYMBOLS = list(dict.fromkeys(config.SYMBOLS + config.PREDICT_SYMBOLS))
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
 

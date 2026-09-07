@@ -192,7 +192,13 @@
     <div class="chart-wrap"><canvas id="chart-near-misses"></canvas></div>
   </div>
 
-  <div class="card">
+  <div class="card full">
+    <h2>Price-trend predictions &mdash; probability of going up</h2>
+    <p class="desc">Next-candle prediction per coin, from the daily-retrained models. Dashed = alert threshold.</p>
+    <div class="chart-wrap"><canvas id="chart-predictions"></canvas></div>
+  </div>
+
+  <div class="card full">
     <h2>Trained models</h2>
     <p class="desc">Every model in Postgres, with whatever metadata it was saved with.</p>
     <div id="models-table"><div class="empty">Loading...</div></div>
@@ -210,6 +216,7 @@ function fmtTime(iso) {
 
 let charts = {};
 let minProfitThresholdPct = 0.05;
+let predictUpThresholdPct = 65;
 
 function ensureChart(id, cfg) {
   if (charts[id]) charts[id].destroy();
@@ -352,6 +359,44 @@ function renderNearMisses(rows) {
   });
 }
 
+function renderPredictions(rows) {
+  const wrap = document.getElementById("chart-predictions").parentElement;
+  if (!rows.length) {
+    wrap.innerHTML = '<div class="empty">No trained prediction models yet - check back after the daily training job runs (06:00 UTC).</div>';
+    return;
+  }
+  const labels = rows.map(r => r.symbol);
+  const values = rows.map(r => r.prob_up * 100);
+  const colors = values.map(v => v >= predictUpThresholdPct ? "#2ebd85" : "#5b8def");
+
+  ensureChart("chart-predictions", {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: "prob up %", data: values, backgroundColor: colors },
+        {
+          label: "threshold", type: "line",
+          data: labels.map(() => predictUpThresholdPct),
+          borderColor: "#8a91a3", borderDash: [5, 5], pointRadius: 0, borderWidth: 1,
+        },
+      ],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.x.toFixed(1)}%` } },
+      },
+      scales: {
+        x: { min: 0, max: 100, ticks: { color: "#8a91a3", callback: (v) => v + "%" }, grid: { color: "#1f2530" } },
+        y: { ticks: { color: "#e6e8ec" }, grid: { display: false } },
+      },
+    },
+  });
+}
+
 function renderModels(models) {
   const el = document.getElementById("models-table");
   if (!models.length) {
@@ -371,20 +416,23 @@ function renderModels(models) {
 
 async function refresh() {
   try {
-    const [cfg, stats, opportunities, candles, nearMisses, models] = await Promise.all([
+    const [cfg, stats, opportunities, candles, nearMisses, predictions, models] = await Promise.all([
       fetchJSON("/api/config"),
       fetchJSON("/api/stats"),
       fetchJSON("/api/opportunities?hours=24"),
       fetchJSON("/api/candles?symbol=BTCUSDT&hours=24"),
       fetchJSON("/api/near_misses?hours=24"),
+      fetchJSON("/api/predictions"),
       fetchJSON("/api/models"),
     ]);
     minProfitThresholdPct = cfg.min_profit_threshold_pct;
+    predictUpThresholdPct = cfg.predict_up_threshold_pct;
 
     renderStats(stats);
     renderOpportunities(opportunities);
     renderPrice(candles);
     renderNearMisses(nearMisses);
+    renderPredictions(predictions);
     renderModels(models);
 
     document.getElementById("status-dot").classList.remove("stale");

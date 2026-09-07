@@ -111,6 +111,17 @@ MANUAL_REVIEW_LOSS_THRESHOLD_USDT = 5.0  # ~20% cumulative - no auto-reset past 
 MAX_TRADES_PER_DAY = 10              # runaway-loop breaker, not a real constraint at this scale
 MIN_SECONDS_BETWEEN_TRADES = 5       # guards against a tick burst firing several trades at once
 
+# --- Multi-coin price-trend prediction ---
+# Extra USDT pairs (beyond the triangular loop's BTCUSDT/ETHUSDT) tracked
+# purely for the price-trend model - subscribed on the same live WS stream
+# and collected into market_candles alongside the triangular symbols, with
+# no effect on arbitrage detection itself.
+PREDICT_EXTRA_SYMBOLS = ["BNBUSDT", "SOLUSDT", "LINKUSDT", "INJUSDT", "DOGEUSDT"]
+# Full set the price-trend model trains one classifier per symbol on.
+PREDICT_SYMBOLS = ["BTCUSDT", "ETHUSDT"] + PREDICT_EXTRA_SYMBOLS
+# /predict calls out coins scoring >= this as a probability-of-up highlight.
+PREDICT_UP_THRESHOLD = 0.65
+
 # --- Web dashboard ---
 # Railway injects PORT automatically once a public domain is generated for
 # this service; falls back to 8080 for local runs.

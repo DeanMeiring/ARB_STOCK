@@ -155,9 +155,9 @@ class TelegramNotifier:
         ]
 
         self._send(chat_id, "\n".join(lines))
-        self._send(chat_id, "Want a BTC price prediction from the trend model?", reply_markup={
+        self._send(chat_id, "Want price-trend predictions across all tracked coins?", reply_markup={
             "inline_keyboard": [[
-                {"text": "Yes, predict", "callback_data": "predict_btc"},
+                {"text": "Yes, predict", "callback_data": "predict_all"},
                 {"text": "No thanks", "callback_data": "predict_no"},
             ]]
         })
@@ -169,7 +169,7 @@ class TelegramNotifier:
             self._send(chat_id, "Not logged in - send /login <password> first.")
             return
         import price_predictor  # deferred: pandas/xgboost only load when actually needed
-        self._send(chat_id, price_predictor.predict_latest())
+        self._send(chat_id, price_predictor.predict_all_text())
 
     def _handle_trainstatus(self, chat_id):
         """Reports the last recorded outcome of the training cron job -
@@ -199,7 +199,7 @@ class TelegramNotifier:
 
         self._answer_callback(callback_id)  # stops the button's loading spinner
 
-        if data == "predict_btc":
+        if data == "predict_all":
             self._handle_predict(chat_id)
         # "predict_no" needs no further action
 
