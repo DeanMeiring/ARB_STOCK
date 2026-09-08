@@ -144,9 +144,16 @@ PREDICT_UP_THRESHOLD = 0.65
 # order, only measures what this exact strategy would have made/lost.
 #
 # How often to re-check each coin's prediction and react to a threshold
-# crossing - as often as the underlying data resolution allows (candles are
-# 1-minute), so a crossing isn't missed for several minutes.
-PREDICTION_CHECK_INTERVAL_MINUTES = 1
+# crossing. Checking every 1 minute (the old value) meant prob_up hovering
+# right at the boundary could open and close a position within a minute or
+# two - too little price movement for the move to clear the round-trip fee
+# cost, so a directionally-correct call still nets a loss (see 2026-09-08
+# session notes). Widening this to hourly gives each position real room to
+# develop before the model's confidence has a chance to flip it back below
+# threshold - trading off reacting slower to a genuine, fast reversal.
+# Deliberately being tested this way for a day before deciding whether it's
+# actually the fix.
+PREDICTION_CHECK_INTERVAL_MINUTES = 60
 
 # --- Web dashboard ---
 # Railway injects PORT automatically once a public domain is generated for

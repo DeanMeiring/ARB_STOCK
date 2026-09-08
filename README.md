@@ -70,10 +70,13 @@ Separately from the daily-retrained models above, `prediction_tracker.py`
 simulates one long position per coin, driven entirely by the model's own
 confidence rather than a fixed clock - prices (and the model's confidence)
 can move fast enough that a fixed hold time either exits too early or holds
-too long. Every `config.PREDICTION_CHECK_INTERVAL_MINUTES` (default 1), for
-each `config.PREDICT_SYMBOLS` coin, it re-checks the current `prob_up`
-against `config.PREDICT_UP_THRESHOLD` (the same 0.65 `/predict` already
-highlights coins at) and reacts to a crossing:
+too long. Every `config.PREDICTION_CHECK_INTERVAL_MINUTES` (60, i.e. hourly -
+raised from an initial 1-minute check after that turned out to open/close
+positions too fast for the price move to clear the round-trip fee cost even
+on directionally-correct calls; being tested at this wider interval before
+deciding it's the actual fix), for each `config.PREDICT_SYMBOLS` coin, it
+re-checks the current `prob_up` against `config.PREDICT_UP_THRESHOLD` (the
+same 0.65 `/predict` already highlights coins at) and reacts to a crossing:
 
 - **No open position, prob_up crosses >= threshold** -> "buys": opens a
   paper position (`paper_trades`) at the current price.
