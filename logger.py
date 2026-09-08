@@ -634,6 +634,10 @@ def get_todays_paper_trade_stats() -> dict:
     total, correct_count, pnl_usdt = cur.fetchone()
     cur.execute("SELECT COUNT(*) FROM paper_trades WHERE open")
     open_count = cur.fetchone()[0]
+    # Lifetime = every closed trade ever, not just today's SAST window -
+    # same "closed only" rule as above, just with no date filter.
+    cur.execute("SELECT COALESCE(SUM(pnl_usdt), 0) FROM paper_trades WHERE NOT open")
+    lifetime_pnl_usdt = cur.fetchone()[0]
     cur.close()
     conn.close()
     return {
@@ -642,6 +646,7 @@ def get_todays_paper_trade_stats() -> dict:
         "accuracy_pct": (correct_count / total * 100) if total else None,
         "pnl_usdt": pnl_usdt,
         "open_count": open_count,
+        "lifetime_pnl_usdt": lifetime_pnl_usdt,
     }
 
 

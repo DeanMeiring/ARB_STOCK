@@ -271,6 +271,11 @@
     <div class="value" id="tile-pred-pnl">--</div>
     <div class="sub" id="tile-pred-pnl-sub">buy &gt;=threshold, sell &lt;threshold</div>
   </div>
+  <div class="tile">
+    <div class="label">Hypothetical P&amp;L (lifetime)</div>
+    <div class="value" id="tile-pred-pnl-lifetime">--</div>
+    <div class="sub">every closed paper trade, ever</div>
+  </div>
 </div>
 
 <div class="charts">
@@ -384,8 +389,13 @@ function renderPredictionAccuracy(stats) {
   const accSubEl = document.getElementById("tile-pred-accuracy-sub");
   const pnlEl = document.getElementById("tile-pred-pnl");
   const pnlSubEl = document.getElementById("tile-pred-pnl-sub");
+  const lifetimeEl = document.getElementById("tile-pred-pnl-lifetime");
   accEl.classList.remove("status-success", "status-failed");
   pnlEl.classList.remove("status-success", "status-failed");
+  lifetimeEl.classList.remove("status-success", "status-failed");
+
+  lifetimeEl.textContent = `${stats.lifetime_pnl_usdt >= 0 ? "+" : ""}$${stats.lifetime_pnl_usdt.toFixed(2)}`;
+  lifetimeEl.classList.add(stats.lifetime_pnl_usdt >= 0 ? "status-success" : "status-failed");
 
   const openNote = stats.open_count ? `${stats.open_count} open now` : "none open now";
 
