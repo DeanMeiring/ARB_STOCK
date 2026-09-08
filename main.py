@@ -1,7 +1,6 @@
 """
 ARB_STOCK - Arbitrage Monitor (Binance triangular + Binance/Crypto.com cross-exchange)
 
-Detection, logging & Telegram alerts only - this does NOT place real trades.
 Two independent detectors run side by side:
   1. Triangular: loops USDT -> BTC -> ETH -> USDT (and the reverse) on
      Binance alone, using its live WebSocket book-ticker feed.
@@ -9,8 +8,13 @@ Two independent detectors run side by side:
      BTC_USDT, polled over REST (no WS schema for Crypto.com was
      verifiable from the dev environment, so REST was the safer choice).
 Both log any opportunity that clears the fee-adjusted profit threshold to
-Postgres, and message anyone who has /login'd via the Telegram bot so it
-can be executed manually.
+Postgres, and message anyone who has /login'd via the Telegram bot.
+
+config.EXECUTE_TRADES (default False) gates whether the triangular
+detector's opportunities also get executed for real, via executor.py -
+every attempt is checked against governor.py's kill switch/loss limits/
+rate limiter first. Cross-exchange opportunities are detection/alert-only
+regardless of EXECUTE_TRADES; executor.py doesn't implement that leg.
 
 Run:
     python main.py
@@ -251,8 +255,11 @@ async def dashboard_server():
 
 async def main():
     logger.init_db()
+    # Always initialized, not just when EXECUTE_TRADES is on - /tradestatus,
+    # /halt, /resume all read this, and the governor should be exercisable
+    # end-to-end against Testnet before anyone flips EXECUTE_TRADES for real.
+    logger.init_trading_tables()
     if config.EXECUTE_TRADES:
-        executor.init_trades_db()
         print("*** EXECUTE_TRADES is ON - real orders will be placed against "
               f"{config.BINANCE_BASE_URL} ***")
     await asyncio.gather(

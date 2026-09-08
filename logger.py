@@ -423,6 +423,153 @@ def get_stats_json() -> dict:
     }
 
 
+def init_trading_tables():
+    """
+    Real trade executions (executor.py) and the governor's kill-switch state.
+    Postgres, not the old sqlite3 DB_PATH file - Railway's filesystem doesn't
+    persist across deploys/restarts, which would silently reset the daily
+    loss limit (and lose trade history) on every redeploy.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMPTZ NOT NULL,
+            direction TEXT NOT NULL,
+            expected_profit_pct DOUBLE PRECISION,
+            status TEXT NOT NULL,              -- 'success', 'failed_unwound', 'failed_stuck'
+            start_usdt DOUBLE PRECISION,
+            end_usdt DOUBLE PRECISION,
+            profit_usdt DOUBLE PRECISION,      -- NULL when not cleanly computable in USDT terms (see executor.py) - treat as unknown/needs review, never as zero
+            leg1_symbol TEXT, leg1_side TEXT, leg1_result JSONB,
+            leg2_symbol TEXT, leg2_side TEXT, leg2_result JSONB,
+            leg3_symbol TEXT, leg3_side TEXT, leg3_result JSONB,
+            error TEXT
+        )
+    """)
+    # Singleton row (id always 1) - current kill-switch state. Starts unset
+    # (no row) = not killed; set_kill_switch upserts it.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS governor_state (
+            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            killed BOOLEAN NOT NULL,
+            reason TEXT,
+            updated_at TIMESTAMPTZ NOT NULL
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def log_trade(direction: str, expected_profit_pct: float, status: str, legs: list,
+              start_usdt: float = None, end_usdt: float = None, profit_usdt: float = None, error: str = None):
+    """
+    legs: [[symbol, side, result_dict_or_None], ...] x3, result is the raw
+    Binance order response (or None if that leg never got placed).
+    profit_usdt: pass None when it can't be cleanly computed in USDT terms
+    (see executor.py's unwind paths) - the governor treats a NULL-profit
+    trade as needing manual review, never as a zero/neutral outcome.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO trades (
+            timestamp, direction, expected_profit_pct, status, start_usdt, end_usdt, profit_usdt,
+            leg1_symbol, leg1_side, leg1_result,
+            leg2_symbol, leg2_side, leg2_result,
+            leg3_symbol, leg3_side, leg3_result,
+            error
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (
+        datetime.now(timezone.utc), direction, expected_profit_pct, status, start_usdt, end_usdt, profit_usdt,
+        legs[0][0], legs[0][1], Json(legs[0][2]) if legs[0][2] is not None else None,
+        legs[1][0], legs[1][1], Json(legs[1][2]) if legs[1][2] is not None else None,
+        legs[2][0], legs[2][1], Json(legs[2][2]) if legs[2][2] is not None else None,
+        error,
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_todays_trade_stats() -> dict:
+    """
+    count: trades attempted today (any status).
+    known_profit_usdt: sum of profit_usdt for trades where it's known -
+    excludes NULL-profit (needs-review) trades, so this can UNDERSTATE the
+    real loss if one of those is actually a big loser. That's intentional:
+    the governor treats any NULL-profit trade as an automatic kill-switch
+    trigger (see governor.py), so it never relies on this number alone.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*), COALESCE(SUM(profit_usdt), 0)
+        FROM trades
+        WHERE timestamp > date_trunc('day', NOW())
+    """)
+    count, known_profit_usdt = cur.fetchone()
+    cur.execute("""
+        SELECT COUNT(*) FROM trades
+        WHERE timestamp > date_trunc('day', NOW()) AND profit_usdt IS NULL
+    """)
+    unknown_count = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return {"count": count, "known_profit_usdt": known_profit_usdt, "unknown_profit_count": unknown_count}
+
+
+def get_cumulative_profit_usdt() -> float:
+    """Sum of profit_usdt across all known-outcome trades, ever. Same NULL caveat as get_todays_trade_stats."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(SUM(profit_usdt), 0) FROM trades")
+    total = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return total
+
+
+def get_last_trade_time():
+    """Timestamp of the most recent trade attempt (any status), or None if there's never been one."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT timestamp FROM trades ORDER BY timestamp DESC LIMIT 1")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else None
+
+
+def get_kill_switch() -> dict:
+    """{'killed': bool, 'reason': str|None, 'updated_at': datetime|None} - killed=False if never set."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT killed, reason, updated_at FROM governor_state WHERE id = 1")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return {"killed": False, "reason": None, "updated_at": None}
+    killed, reason, updated_at = row
+    return {"killed": killed, "reason": reason, "updated_at": updated_at}
+
+
+def set_kill_switch(killed: bool, reason: str = None):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO governor_state (id, killed, reason, updated_at)
+        VALUES (1, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET killed = EXCLUDED.killed, reason = EXCLUDED.reason, updated_at = EXCLUDED.updated_at
+    """, (killed, reason, datetime.now(timezone.utc)))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
 def bulk_log_candles(rows: list):
     """
     rows: list of (symbol, candle_start, open, high, low, close, tick_count)

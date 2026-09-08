@@ -5,6 +5,12 @@ Only implements what the executor needs: account balance and market orders.
 Uses HMAC-SHA256 request signing per Binance's spot API auth spec.
 
 Docs: https://binance-docs.github.io/apidocs/spot/en/#signed-trade-and-user_data-endpoints-security
+
+If config.BINANCE_PROXY_URL is set, these signed calls route through it
+instead of going out directly - Binance sees the proxy's fixed IP, which is
+what you whitelist on a trade-permission key (Binance requires those to be
+IP-restricted; Railway's own outbound IP isn't static without a paid add-on).
+Leave unset for Testnet/read-only use, where IP restriction doesn't apply.
 """
 
 import hashlib
@@ -34,6 +40,12 @@ def _headers():
     return {"X-MBX-APIKEY": config.BINANCE_API_KEY}
 
 
+def _proxies():
+    if not config.BINANCE_PROXY_URL:
+        return None
+    return {"http": config.BINANCE_PROXY_URL, "https": config.BINANCE_PROXY_URL}
+
+
 def _check_keys():
     if not config.BINANCE_API_KEY or not config.BINANCE_API_SECRET:
         raise BinanceRestError(
@@ -51,6 +63,7 @@ def get_account_balances() -> dict:
         f"{config.BINANCE_BASE_URL}/api/v3/account",
         params=params,
         headers=_headers(),
+        proxies=_proxies(),
         timeout=10,
     )
     if resp.status_code != 200:
@@ -95,6 +108,7 @@ def place_market_order(symbol: str, side: str, quote_order_qty: float = None, qu
         f"{config.BINANCE_BASE_URL}/api/v3/order",
         params=params,
         headers=_headers(),
+        proxies=_proxies(),
         timeout=10,
     )
     if resp.status_code != 200:

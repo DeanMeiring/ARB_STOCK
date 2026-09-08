@@ -88,6 +88,15 @@ BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "").strip()
 BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "").strip()
 BINANCE_BASE_URL = "https://testnet.binance.vision"  # DO NOT point this at api.binance.com without a full review
 
+# Static-IP proxy for the signed Binance calls in binance_rest.py (account
+# balance, place order) - e.g. a QuotaGuard Static proxy URL
+# ("http://user:pass@host:port"). Binance sees requests as coming from this
+# proxy's fixed IP, which is what you whitelist on a trade-permission key
+# (Binance requires those to be IP-restricted). Leave unset for Testnet/
+# read-only use, where IP restriction doesn't apply - requests go out
+# directly with Railway's normal (non-static) egress IP.
+BINANCE_PROXY_URL = os.environ.get("BINANCE_PROXY_URL", "").strip()
+
 # Amount of USDT to risk per triangular loop attempt (testnet money)
 TRADE_SIZE_USDT = 20.0
 
@@ -96,15 +105,13 @@ TRADE_SIZE_USDT = 20.0
 # loop attempt would actually make/lose, not a placeholder portfolio size.
 SIMULATED_START_USDT = 20.0
 
-# --- Live-capital test plan (numbers only - NOT YET ENFORCED) ---
+# --- Live-capital test plan ---
 # Agreed sizing for the first small live-capital test: $25 total funded to the
 # exchange account, trading with it directly rather than holding most of it in
-# reserve. These constants exist so the governor code (kill switch, daily loss
-# limit, rate limiter - none of which exist yet) has agreed values to wire up
-# against. Defining them here does NOT turn on live trading by itself -
-# EXECUTE_TRADES and BINANCE_BASE_URL above are what gate that, and neither
-# should change until the governors that read these values are built and
-# tested.
+# reserve. Enforced by governor.py (kill switch, daily loss limit, cumulative
+# manual-review threshold, trade-count cap, min-gap-between-trades) - see that
+# file's docstring. Defining/enforcing these does NOT turn on live trading by
+# itself - EXECUTE_TRADES and BINANCE_BASE_URL above are what gate that.
 TOTAL_LIVE_CAPITAL_USDT = 25.0       # total funded to the exchange account
 MAX_DAILY_LOSS_USDT = 3.0            # ~12% of capital - auto-halt for the day
 MANUAL_REVIEW_LOSS_THRESHOLD_USDT = 5.0  # ~20% cumulative - no auto-reset past this, needs a human look

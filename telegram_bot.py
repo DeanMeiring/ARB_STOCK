@@ -119,6 +119,12 @@ class TelegramNotifier:
             self._handle_predict(chat_id)
         elif text.startswith("/trainstatus"):
             self._handle_trainstatus(chat_id)
+        elif text.startswith("/tradestatus"):
+            self._handle_tradestatus(chat_id)
+        elif text.startswith("/halt"):
+            self._handle_halt(chat_id, text)
+        elif text.startswith("/resume"):
+            self._handle_resume(chat_id)
 
     def _handle_login(self, chat_id, text):
         import logger  # deferred to avoid a hard import-time DB dependency
@@ -196,6 +202,59 @@ class TelegramNotifier:
         header = f"Last training run: {status.upper()} — {_format_ago(ran_at)} ({ran_at:%b %-d, %H:%M} UTC)"
         body = f"\n\n{detail}" if detail else ""
         self._send(chat_id, (header + body)[:4096])
+
+    def _handle_tradestatus(self, chat_id):
+        """Live-trading governor state - kill switch, today's/cumulative P&L
+        and trade count, against the config.py limits. Reads straight from
+        Postgres (governor.py's own state), so this is accurate even if
+        EXECUTE_TRADES is off (shows what WOULD gate trades if it were on)."""
+        import logger
+
+        if chat_id not in logger.get_subscribers():
+            self._send(chat_id, "Not logged in - send /login <password> first.")
+            return
+
+        state = logger.get_kill_switch()
+        today = logger.get_todays_trade_stats()
+        cumulative = logger.get_cumulative_profit_usdt()
+
+        lines = [
+            "\U0001F6E1 Trade Governor Status",
+            f"Live execution: {'ON' if config.EXECUTE_TRADES else 'OFF'} ({config.BINANCE_BASE_URL})",
+            f"Kill switch: {'ON — ' + state['reason'] if state['killed'] else 'off'}",
+            "",
+            f"Today: {today['count']} trade(s), known P&L ${today['known_profit_usdt']:.2f} "
+            f"(limit -${config.MAX_DAILY_LOSS_USDT:.2f}, {config.MAX_TRADES_PER_DAY} trades/day)",
+        ]
+        if today["unknown_profit_count"]:
+            lines.append(f"  ⚠ {today['unknown_profit_count']} trade(s) today with UNKNOWN P&L")
+        lines.append(
+            f"Cumulative: ${cumulative:.2f} (manual-review halt at -${config.MANUAL_REVIEW_LOSS_THRESHOLD_USDT:.2f})"
+        )
+        lines.append("\nCommands: /halt <reason>, /resume")
+        self._send(chat_id, "\n".join(lines))
+
+    def _handle_halt(self, chat_id, text):
+        import logger
+
+        if chat_id not in logger.get_subscribers():
+            self._send(chat_id, "Not logged in - send /login <password> first.")
+            return
+
+        parts = text.split(maxsplit=1)
+        reason = parts[1].strip() if len(parts) > 1 else "manually halted via /halt"
+        logger.set_kill_switch(True, reason)
+        self._send(chat_id, f"\U0001F6D1 Kill switch ON: {reason}\n\nNo further trades will execute until /resume.")
+
+    def _handle_resume(self, chat_id):
+        import logger
+
+        if chat_id not in logger.get_subscribers():
+            self._send(chat_id, "Not logged in - send /login <password> first.")
+            return
+
+        logger.set_kill_switch(False, None)
+        self._send(chat_id, "✅ Kill switch OFF. Trading governor checks (daily loss limit, rate limiter, etc.) still apply.")
 
     def _handle_callback(self, callback):
         callback_id = callback["id"]
