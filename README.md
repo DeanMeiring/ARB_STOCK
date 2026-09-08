@@ -15,17 +15,19 @@ alerts only.** Message the bot `/login <password>` (see
 clears threshold, then execute manually if you want to act on it.
 `executor.py` implements real execution for the **triangular** loop only
 (not cross-exchange), gated behind `EXECUTE_TRADES` and, before every single
-order, `governor.py`'s safety checks - see **Live trading** below. The
-Binance API key currently in use is Reading-only, so even with
-`EXECUTE_TRADES` on nothing would actually place until that's swapped for a
-trade-permission key (see below).
+order, `governor.py`'s safety checks - see **Live trading** below.
+`BINANCE_API_KEY`/`BINANCE_API_SECRET` are now a real, IP-restricted,
+trade-permission key (routed through `BINANCE_PROXY_URL`'s static IP), and
+`BINANCE_BASE_URL` points at real Binance (`https://api.binance.com`), not
+Testnet - `EXECUTE_TRADES` is the only thing still holding this at
+detection-only, and it stays `False` until that's a deliberate, separate
+decision.
 
 ## Why detection-only for now
 
-Binance requires trading-permission API keys to be IP-restricted. Railway's
-own outbound IP isn't static without a paid add-on, so a request through
-`config.BINANCE_PROXY_URL` (a static-IP proxy, e.g. QuotaGuard Static) is
-the workaround - see **Live trading** below.
+`EXECUTE_TRADES=False` - everything below it (real key, real
+`BINANCE_BASE_URL`, static-IP proxy, governor) is wired up and exercisable,
+but no order gets placed until that flag is flipped on purpose.
 
 ## Telegram commands
 
@@ -83,16 +85,12 @@ survive redeploys - `/tradestatus` reads them live and works even with
 `EXECUTE_TRADES` off, so the whole governor path is exercisable against
 Testnet before anything real is at stake.
 
-**Before flipping `EXECUTE_TRADES` on for real:**
-1. Get a static-IP proxy (e.g. QuotaGuard Static) and set `BINANCE_PROXY_URL`
-   (`http://user:pass@host:port`) - `binance_rest.py` routes the signed
-   account/order calls through it when set.
-2. On Binance's API Management page, add that IP under "Restrict access to
-   trusted IPs only" **before** enabling "Enable Spot & Margin Trading" -
-   Binance auto-deletes a key that has trading enabled while IP-unrestricted.
-3. Set `BINANCE_API_KEY`/`BINANCE_API_SECRET` to that key (never the
-   read-only one) and point `BINANCE_BASE_URL` at `https://api.binance.com`
-   only after you've reviewed `executor.py` and `governor.py` yourself.
+**Done:** static-IP proxy (`BINANCE_PROXY_URL`), IP-restricted trade-permission
+key (`BINANCE_API_KEY`/`BINANCE_API_SECRET`), and `BINANCE_BASE_URL` pointed
+at real Binance are all live. **Not done:** `EXECUTE_TRADES` is still
+`False` - flip it only after separately deciding you're ready, ideally after
+watching `/tradestatus` and a read-only balance check succeed against the
+real account first.
 
 ## Plan
 

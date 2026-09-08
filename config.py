@@ -79,14 +79,19 @@ TELEGRAM_LOGIN_PASSWORD = os.environ.get("TELEGRAM_LOGIN_PASSWORD", "").strip()
 # safe). True = actually places orders against whichever BASE_URL is set below.
 EXECUTE_TRADES = False
 
-# Binance Testnet - fake money, real order matching engine/API behavior.
-# Get free testnet API keys at https://testnet.binance.vision/
+# Real Binance - real money, real orders. Deliberately switched from Testnet
+# on 2026-09-08 once the IP-restricted, trade-permission key and governor.py
+# were in place. EXECUTE_TRADES (above) is what actually gates whether any
+# order gets placed here - this alone does not turn on live trading, but do
+# not treat that as a reason to be casual about this URL: every signed call
+# through binance_rest.py now hits the real exchange, including balance
+# checks, the moment EXECUTE_TRADES flips true.
 # NEVER hardcode keys here - set them as environment variables:
 #   export BINANCE_API_KEY="..."
 #   export BINANCE_API_SECRET="..."
 BINANCE_API_KEY = os.environ.get("BINANCE_API_KEY", "").strip()
 BINANCE_API_SECRET = os.environ.get("BINANCE_API_SECRET", "").strip()
-BINANCE_BASE_URL = "https://testnet.binance.vision"  # DO NOT point this at api.binance.com without a full review
+BINANCE_BASE_URL = "https://api.binance.com"
 
 # Static-IP proxy for the signed Binance calls in binance_rest.py (account
 # balance, place order) - e.g. a QuotaGuard Static proxy URL
