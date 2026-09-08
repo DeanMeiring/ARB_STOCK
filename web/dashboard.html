@@ -56,6 +56,55 @@
     box-shadow: 0 0 6px var(--green);
   }
   .dot.stale { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 18px;
+    margin-bottom: 20px;
+    padding: 12px 16px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+  }
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .control-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .range-btn, #refresh-btn {
+    background: transparent;
+    border: 1px solid var(--card-border);
+    color: var(--text-dim);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .range-btn:hover, #refresh-btn:hover { border-color: var(--accent); color: var(--text); }
+  .range-btn.active { background: var(--accent); border-color: var(--accent); color: #131722; font-weight: 600; }
+  #symbol-select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
   .tiles {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -153,6 +202,25 @@
   </div>
 </header>
 
+<div class="controls">
+  <div class="control-group">
+    <span class="control-label">Range</span>
+    <button class="range-btn" data-hours="1">1H</button>
+    <button class="range-btn" data-hours="6">6H</button>
+    <button class="range-btn active" data-hours="24">24H</button>
+    <button class="range-btn" data-hours="72">3D</button>
+    <button class="range-btn" data-hours="168">7D</button>
+  </div>
+  <div class="control-group">
+    <span class="control-label">Price chart</span>
+    <select id="symbol-select"><option>BTCUSDT</option></select>
+  </div>
+  <div class="control-group">
+    <button id="refresh-btn">&#8635; Refresh now</button>
+    <label class="toggle"><input type="checkbox" id="auto-refresh-toggle" checked> Auto-refresh (30s)</label>
+  </div>
+</div>
+
 <div class="tiles">
   <div class="tile">
     <div class="label">Triangular (total / 24h)</div>
@@ -175,19 +243,19 @@
 
 <div class="charts">
   <div class="card full">
-    <h2>Detected opportunities &mdash; profit % (last 24h)</h2>
-    <p class="desc">Triangular (Binance) and cross-exchange (Binance vs Crypto.com), every logged event.</p>
+    <h2 id="heading-opportunities">Detected opportunities &mdash; profit %</h2>
+    <p class="desc">Triangular (Binance) and cross-exchange (Binance vs Crypto.com), every logged event. Click a legend entry to toggle it.</p>
     <div class="chart-wrap"><canvas id="chart-opportunities"></canvas></div>
   </div>
 
   <div class="card full">
-    <h2>BTCUSDT price (last 24h)</h2>
-    <p class="desc">From the 1-minute candle history collected for model training.</p>
+    <h2 id="heading-price">BTCUSDT price</h2>
+    <p class="desc">From the 1-minute candle history collected for model training. Pick a coin above.</p>
     <div class="chart-wrap"><canvas id="chart-price"></canvas></div>
   </div>
 
   <div class="card">
-    <h2>Near-miss trend (last 24h)</h2>
+    <h2 id="heading-near-misses">Near-miss trend</h2>
     <p class="desc">Best sub-threshold sample every 30s, per detector. Dashed = profit threshold.</p>
     <div class="chart-wrap"><canvas id="chart-near-misses"></canvas></div>
   </div>
@@ -205,18 +273,34 @@
   </div>
 </div>
 
-<footer>Auto-refreshes every 30s &middot; times in UTC</footer>
+<footer>Auto-refreshes every 30s (toggle above) &middot; times in SAST (UTC+2)</footer>
 
 <script>
 const SOURCE_COLORS = { triangular: "#f0b90b", cross_exchange: "#5b8def" };
 
-function fmtTime(iso) {
-  return new Date(iso).toISOString().slice(11, 16);
+// SAST (South Africa Standard Time) is UTC+2 year-round, no DST - so a
+// fixed offset is all that's needed, no timezone library required.
+const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
+function toSAST(iso) {
+  return new Date(new Date(iso).getTime() + SAST_OFFSET_MS);
 }
+function fmtTime(iso) {
+  return toSAST(iso).toISOString().slice(11, 16);
+}
+function fmtDateTime(iso) {
+  return toSAST(iso).toISOString().slice(0, 16).replace("T", " ");
+}
+function fmtClock(iso) {
+  return toSAST(iso).toISOString().slice(11, 19);
+}
+
+const RANGE_LABELS = { 1: "last 1h", 6: "last 6h", 24: "last 24h", 72: "last 3d", 168: "last 7d" };
 
 let charts = {};
 let minProfitThresholdPct = 0.05;
 let predictUpThresholdPct = 65;
+let autoRefreshTimer = null;
+const state = { hours: 24, symbol: "BTCUSDT" };
 
 function ensureChart(id, cfg) {
   if (charts[id]) charts[id].destroy();
@@ -242,7 +326,7 @@ function renderStats(stats) {
     const run = stats.latest_training_run;
     trainingEl.textContent = run.status.toUpperCase();
     trainingEl.classList.add(run.status === "success" ? "status-success" : "status-failed");
-    trainingSubEl.textContent = new Date(run.ran_at).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+    trainingSubEl.textContent = fmtDateTime(run.ran_at) + " SAST";
   } else {
     trainingEl.textContent = "never run";
     trainingSubEl.textContent = "";
@@ -250,9 +334,10 @@ function renderStats(stats) {
 }
 
 function renderOpportunities(rows) {
+  document.getElementById("heading-opportunities").textContent = `Detected opportunities — profit % (${RANGE_LABELS[state.hours]})`;
   const wrap = document.getElementById("chart-opportunities").parentElement;
   if (!rows.length) {
-    wrap.innerHTML = '<div class="empty">No opportunities logged in this window yet.</div>';
+    wrap.innerHTML = `<div class="empty">No opportunities logged in this window yet.</div>`;
     return;
   }
   const labels = [...new Set(rows.map(r => r.timestamp))].sort();
@@ -291,6 +376,7 @@ function renderOpportunities(rows) {
 }
 
 function renderPrice(rows) {
+  document.getElementById("heading-price").textContent = `${state.symbol} price (${RANGE_LABELS[state.hours]})`;
   const wrap = document.getElementById("chart-price").parentElement;
   if (!rows.length) {
     wrap.innerHTML = '<div class="empty">No candle history in this window yet.</div>';
@@ -301,7 +387,7 @@ function renderPrice(rows) {
     data: {
       labels: rows.map(r => fmtTime(r.timestamp)),
       datasets: [{
-        label: "BTCUSDT", data: rows.map(r => r.close),
+        label: state.symbol, data: rows.map(r => r.close),
         borderColor: "#f0b90b", backgroundColor: "#f0b90b",
         tension: 0.15, pointRadius: 0, borderWidth: 1.5,
       }],
@@ -318,6 +404,7 @@ function renderPrice(rows) {
 }
 
 function renderNearMisses(rows) {
+  document.getElementById("heading-near-misses").textContent = `Near-miss trend (${RANGE_LABELS[state.hours]})`;
   const wrap = document.getElementById("chart-near-misses").parentElement;
   if (!rows.length) {
     wrap.innerHTML = '<div class="empty">No near-miss samples in this window yet.</div>';
@@ -362,7 +449,7 @@ function renderNearMisses(rows) {
 function renderPredictions(rows) {
   const wrap = document.getElementById("chart-predictions").parentElement;
   if (!rows.length) {
-    wrap.innerHTML = '<div class="empty">No trained prediction models yet - check back after the daily training job runs (06:00 UTC).</div>';
+    wrap.innerHTML = '<div class="empty">No trained prediction models yet - check back after the daily training job runs (08:00 SAST).</div>';
     return;
   }
   const labels = rows.map(r => r.symbol);
@@ -405,28 +492,37 @@ function renderModels(models) {
   }
   let html = '<table class="models"><thead><tr><th>Model</th><th>Trained</th><th>Info</th></tr></thead><tbody>';
   for (const m of models) {
-    const trained = new Date(m.trained_at).toISOString().slice(0, 16).replace("T", " ");
+    const trained = fmtDateTime(m.trained_at);
     const meta = m.metadata || {};
     const info = Object.entries(meta).map(([k, v]) => `${k}: ${typeof v === "number" ? v.toFixed ? v.toFixed(3) : v : v}`).join(", ");
-    html += `<tr><td>${m.model_name}</td><td>${trained} UTC</td><td>${info || "-"}</td></tr>`;
+    html += `<tr><td>${m.model_name}</td><td>${trained} SAST</td><td>${info || "-"}</td></tr>`;
   }
   html += "</tbody></table>";
   el.innerHTML = html;
 }
 
+let configLoaded = false;
+
 async function refresh() {
   try {
-    const [cfg, stats, opportunities, candles, nearMisses, predictions, models] = await Promise.all([
-      fetchJSON("/api/config"),
-      fetchJSON("/api/stats"),
-      fetchJSON("/api/opportunities?hours=24"),
-      fetchJSON("/api/candles?symbol=BTCUSDT&hours=24"),
-      fetchJSON("/api/near_misses?hours=24"),
-      fetchJSON("/api/predictions"),
-      fetchJSON("/api/models"),
-    ]);
-    minProfitThresholdPct = cfg.min_profit_threshold_pct;
-    predictUpThresholdPct = cfg.predict_up_threshold_pct;
+    const calls = [
+      fetchJSON(`/api/stats`),
+      fetchJSON(`/api/opportunities?hours=${state.hours}`),
+      fetchJSON(`/api/candles?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}`),
+      fetchJSON(`/api/near_misses?hours=${state.hours}`),
+      fetchJSON(`/api/predictions`),
+      fetchJSON(`/api/models`),
+    ];
+    if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
+    const results = await Promise.all(calls);
+    if (!configLoaded) {
+      const cfg = results.shift();
+      minProfitThresholdPct = cfg.min_profit_threshold_pct;
+      predictUpThresholdPct = cfg.predict_up_threshold_pct;
+      populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
+      configLoaded = true;
+    }
+    const [stats, opportunities, candles, nearMisses, predictions, models] = results;
 
     renderStats(stats);
     renderOpportunities(opportunities);
@@ -436,15 +532,46 @@ async function refresh() {
     renderModels(models);
 
     document.getElementById("status-dot").classList.remove("stale");
-    document.getElementById("status-text").textContent = "live · updated " + new Date().toISOString().slice(11, 19) + " UTC";
+    document.getElementById("status-text").textContent = "live · updated " + fmtClock(new Date().toISOString()) + " SAST";
   } catch (e) {
     document.getElementById("status-dot").classList.add("stale");
     document.getElementById("status-text").textContent = "connection error: " + e.message;
   }
 }
 
+function populateSymbolSelect(symbols) {
+  const select = document.getElementById("symbol-select");
+  select.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join("");
+  select.value = state.symbol;
+}
+
+function setAutoRefresh(on) {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = on ? setInterval(refresh, 30000) : null;
+}
+
+document.querySelectorAll(".range-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".range-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    state.hours = Number(btn.dataset.hours);
+    refresh();
+  });
+});
+
+document.getElementById("symbol-select").addEventListener("change", (e) => {
+  state.symbol = e.target.value;
+  refresh();
+});
+
+document.getElementById("refresh-btn").addEventListener("click", refresh);
+
+document.getElementById("auto-refresh-toggle").addEventListener("change", (e) => {
+  setAutoRefresh(e.target.checked);
+});
+
 refresh();
-setInterval(refresh, 30000);
+setAutoRefresh(true);
 </script>
 
 </body>

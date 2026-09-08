@@ -82,6 +82,7 @@ def api_config(_auth=Depends(require_auth)):
     return {
         "min_profit_threshold_pct": config.MIN_PROFIT_THRESHOLD * 100,
         "predict_up_threshold_pct": config.PREDICT_UP_THRESHOLD * 100,
+        "predict_symbols": config.PREDICT_SYMBOLS,
     }
 
 
