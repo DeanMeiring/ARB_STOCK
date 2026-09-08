@@ -93,6 +93,13 @@ def api_config(_auth=Depends(require_auth)):
     }
 
 
+@app.get("/api/paper_trades")
+def api_paper_trades(symbol: str = "BTCUSDT", hours: int = 24, _auth=Depends(require_auth)):
+    """Every paper trade (open or closed) for one coin in the selected
+    window - feeds the price chart's buy/sell markers and its trades list."""
+    return logger.get_recent_paper_trades(symbol, hours)
+
+
 @app.get("/api/prediction_accuracy")
 def api_prediction_accuracy(_auth=Depends(require_auth)):
     """Today's (SAST) tally of paper_trades closed by prediction_tracker.py's

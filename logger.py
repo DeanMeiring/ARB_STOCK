@@ -558,6 +558,32 @@ def close_paper_trade(trade_id: int, price: float, prob_up: float, pnl_usdt: flo
     conn.close()
 
 
+def get_recent_paper_trades(symbol: str, hours: int = 24) -> list:
+    """Every paper_trades row (open or closed) for symbol whose entry_at
+    falls in the window, oldest first - feeds the dashboard's price-chart
+    buy/sell markers and its recent-trades list."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT entry_at, entry_price, entry_prob_up, open, exit_at, exit_price, pnl_usdt
+        FROM paper_trades
+        WHERE symbol = %s AND entry_at > NOW() - make_interval(hours => %s)
+        ORDER BY entry_at ASC
+    """, (symbol, hours))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [
+        {
+            "entry_at": entry_at.isoformat(), "entry_price": entry_price, "entry_prob_up": entry_prob_up,
+            "open": is_open,
+            "exit_at": exit_at.isoformat() if exit_at else None,
+            "exit_price": exit_price, "pnl_usdt": pnl_usdt,
+        }
+        for entry_at, entry_price, entry_prob_up, is_open, exit_at, exit_price, pnl_usdt in rows
+    ]
+
+
 def get_todays_paper_trade_stats() -> dict:
     """
     Tally of paper_trades that CLOSED today, "today" in SAST (South Africa

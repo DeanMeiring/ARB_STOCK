@@ -185,6 +185,26 @@
     color: var(--text-dim);
   }
   table.models td:first-child { color: var(--text); }
+  #trades-list {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .trade-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    padding: 6px 10px;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: 6px;
+    color: var(--text-dim);
+  }
+  .trade-row .pnl.status-success { color: var(--green); font-weight: 600; }
+  .trade-row .pnl.status-failed { color: var(--red); font-weight: 600; }
+  .trade-row .pnl.open { color: var(--accent); font-weight: 600; }
   footer {
     margin-top: 24px;
     text-align: center;
@@ -261,8 +281,9 @@
 
   <div class="card full">
     <h2 id="heading-price">BTCUSDT price</h2>
-    <p class="desc">From the 1-minute candle history collected for model training. Pick a coin above.</p>
+    <p class="desc">From the 1-minute candle history collected for model training. Pick a coin above. ▲ = paper-trade buy, ▼ = sell.</p>
     <div class="chart-wrap"><canvas id="chart-price"></canvas></div>
+    <div id="trades-list"></div>
   </div>
 
   <div class="card">
@@ -474,32 +495,90 @@ function renderSignal(candlesMulti, predictions) {
   });
 }
 
-function renderPrice(rows) {
+function nearestCandleIndex(rows, iso) {
+  const target = new Date(iso).getTime();
+  let bestIdx = 0, bestDiff = Infinity;
+  rows.forEach((r, i) => {
+    const diff = Math.abs(new Date(r.timestamp).getTime() - target);
+    if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+  });
+  return bestIdx;
+}
+
+function renderPrice(rows, trades) {
   document.getElementById("heading-price").textContent = `${state.symbol} price (${RANGE_LABELS[state.hours]})`;
   const wrap = document.getElementById("chart-price").parentElement;
+  const listEl = document.getElementById("trades-list");
+  trades = trades || [];
+
   if (!rows.length) {
     wrap.innerHTML = '<div class="empty">No candle history in this window yet.</div>';
+    listEl.innerHTML = "";
     return;
   }
+
+  const buyMarkers = new Array(rows.length).fill(null);
+  const sellMarkers = new Array(rows.length).fill(null);
+  trades.forEach(t => {
+    buyMarkers[nearestCandleIndex(rows, t.entry_at)] = t.entry_price;
+    if (!t.open) sellMarkers[nearestCandleIndex(rows, t.exit_at)] = t.exit_price;
+  });
+
   ensureChart("chart-price", {
     type: "line",
     data: {
       labels: rows.map(r => fmtTime(r.timestamp)),
-      datasets: [{
-        label: state.symbol, data: rows.map(r => r.close),
-        borderColor: "#f0b90b", backgroundColor: "#f0b90b",
-        tension: 0.15, pointRadius: 0, borderWidth: 1.5,
-      }],
+      datasets: [
+        {
+          label: state.symbol, data: rows.map(r => r.close),
+          borderColor: "#f0b90b", backgroundColor: "#f0b90b",
+          tension: 0.15, pointRadius: 0, borderWidth: 1.5,
+        },
+        {
+          label: "buy", data: buyMarkers, showLine: false,
+          pointStyle: "triangle", pointRadius: 7, pointRotation: 0,
+          borderColor: "#2ebd85", backgroundColor: "#2ebd85",
+        },
+        {
+          label: "sell", data: sellMarkers, showLine: false,
+          pointStyle: "triangle", pointRadius: 7, pointRotation: 180,
+          borderColor: "#f6465d", backgroundColor: "#f6465d",
+        },
+      ],
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y}` } },
+      },
       scales: {
         x: { ticks: { color: "#8a91a3", maxTicksLimit: 12 }, grid: { color: "#1f2530" } },
         y: { ticks: { color: "#8a91a3" }, grid: { color: "#1f2530" } },
       },
     },
   });
+
+  renderTradesList(trades);
+}
+
+function renderTradesList(trades) {
+  const listEl = document.getElementById("trades-list");
+  if (!trades.length) {
+    listEl.innerHTML = '<div class="empty">No paper trades for this coin in this window yet.</div>';
+    return;
+  }
+  const rowsHtml = trades.slice().reverse().map(t => {
+    const entry = `${fmtTime(t.entry_at)} @ ${t.entry_price}`;
+    if (t.open) {
+      return `<div class="trade-row"><span>▲ ${entry} &rarr; still open</span><span class="pnl open">OPEN</span></div>`;
+    }
+    const exit = `${fmtTime(t.exit_at)} @ ${t.exit_price}`;
+    const pnlClass = t.pnl_usdt >= 0 ? "status-success" : "status-failed";
+    const pnlText = `${t.pnl_usdt >= 0 ? "+" : ""}$${t.pnl_usdt.toFixed(2)}`;
+    return `<div class="trade-row"><span>▲ ${entry} &rarr; ▼ ${exit}</span><span class="pnl ${pnlClass}">${pnlText}</span></div>`;
+  }).join("");
+  listEl.innerHTML = rowsHtml;
 }
 
 function renderNearMisses(rows) {
@@ -613,6 +692,7 @@ async function refresh() {
       fetchJSON(`/api/models`),
       fetchJSON(`/api/candles_multi?hours=${state.hours}`),
       fetchJSON(`/api/prediction_accuracy`),
+      fetchJSON(`/api/paper_trades?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
@@ -623,12 +703,12 @@ async function refresh() {
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy] = results;
+    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades] = results;
 
     renderStats(stats);
     renderPredictionAccuracy(predictionAccuracy);
     renderSignal(candlesMulti, predictions);
-    renderPrice(candles);
+    renderPrice(candles, paperTrades);
     renderNearMisses(nearMisses);
     renderPredictions(predictions);
     renderModels(models);

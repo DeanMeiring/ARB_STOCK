@@ -101,14 +101,17 @@ coin dropdown picks which symbol the single-coin price chart shows, and a
 manual refresh button/auto-refresh toggle sit alongside the usual 30s
 auto-refresh. All timestamps display in SAST (UTC+2), not UTC.
 
-It shows stat tiles for both detectors plus today's prediction accuracy and
+It shows stat tiles for both detectors plus today's paper-trade win rate and
 hypothetical P&L, a multi-coin signal chart (every tracked coin's price
 normalized to % change so wildly different price scales are comparable,
-colored/labeled by its latest up/down call), a single-coin price chart, a
-near-miss trend chart with the threshold marked, the price-trend prediction
-bars, a table of trained models, and the opportunities profit-% chart - all
-read live from the same Postgres tables the bot and cron jobs already write
-to, nothing extra stored for it.
+colored/labeled by its latest up/down call), a single-coin price chart -
+overlaid with ▲/▼ markers for every paper trade opened/closed on that coin
+in the selected window, plus a list below it spelling out each trade's
+entry/exit and P&L (or "still open") - a near-miss trend chart with the
+threshold marked, the price-trend prediction bars, a table of trained
+models, and the opportunities profit-% chart - all read live from the same
+Postgres tables the bot and cron jobs already write to, nothing extra
+stored for it.
 
 Set `DASHBOARD_PASSWORD` before this is exposed on a public URL - Railway
 will generate one once you enable networking for this service, and without
