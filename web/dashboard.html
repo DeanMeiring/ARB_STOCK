@@ -166,6 +166,7 @@
     height: 280px;
     min-width: 280px;
   }
+  .chart-wrap-tall { height: 380px; }
   .empty {
     color: var(--text-dim);
     font-size: 13px;
@@ -243,9 +244,9 @@
 
 <div class="charts">
   <div class="card full">
-    <h2 id="heading-opportunities">Detected opportunities &mdash; profit %</h2>
-    <p class="desc">Triangular (Binance) and cross-exchange (Binance vs Crypto.com), every logged event. Click a legend entry to toggle it.</p>
-    <div class="chart-wrap"><canvas id="chart-opportunities"></canvas></div>
+    <h2 id="heading-signal">Multi-coin signal</h2>
+    <p class="desc">Every tracked coin's price, normalized to % change since the start of the window, colored by its latest prediction. Click a legend entry to isolate a coin.</p>
+    <div class="chart-wrap chart-wrap-tall"><canvas id="chart-signal"></canvas></div>
   </div>
 
   <div class="card full">
@@ -271,6 +272,12 @@
     <p class="desc">Every model in Postgres, with whatever metadata it was saved with.</p>
     <div id="models-table"><div class="empty">Loading...</div></div>
   </div>
+
+  <div class="card full">
+    <h2 id="heading-opportunities">Detected opportunities &mdash; profit %</h2>
+    <p class="desc">Triangular (Binance) and cross-exchange (Binance vs Crypto.com), every logged event. Click a legend entry to toggle it.</p>
+    <div class="chart-wrap"><canvas id="chart-opportunities"></canvas></div>
+  </div>
 </div>
 
 <footer>Auto-refreshes every 30s (toggle above) &middot; times in SAST (UTC+2)</footer>
@@ -295,6 +302,7 @@ function fmtClock(iso) {
 }
 
 const RANGE_LABELS = { 1: "last 1h", 6: "last 6h", 24: "last 24h", 72: "last 3d", 168: "last 7d" };
+const SIGNAL_PALETTE = ["#f0b90b", "#5b8def", "#2ebd85", "#a855f7", "#06b6d4", "#f97316", "#f6465d", "#e879f9"];
 
 let charts = {};
 let minProfitThresholdPct = 0.05;
@@ -366,6 +374,60 @@ function renderOpportunities(rows) {
       plugins: {
         legend: { labels: { color: "#e6e8ec" } },
         tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(4)}%` } },
+      },
+      scales: {
+        x: { ticks: { color: "#8a91a3", maxTicksLimit: 12 }, grid: { color: "#1f2530" } },
+        y: { ticks: { color: "#8a91a3", callback: (v) => v + "%" }, grid: { color: "#1f2530" } },
+      },
+    },
+  });
+}
+
+function renderSignal(candlesMulti, predictions) {
+  document.getElementById("heading-signal").textContent = `Multi-coin signal (${RANGE_LABELS[state.hours]})`;
+  const wrap = document.getElementById("chart-signal").parentElement;
+
+  const predBySymbol = {};
+  predictions.forEach(p => { predBySymbol[p.symbol] = p; });
+
+  const symbols = Object.keys(candlesMulti).filter(s => candlesMulti[s].length > 1);
+  if (!symbols.length) {
+    wrap.innerHTML = '<div class="empty">No candle history in this window yet.</div>';
+    return;
+  }
+
+  const allTimestamps = [...new Set(symbols.flatMap(s => candlesMulti[s].map(r => r.timestamp)))].sort();
+  const labelText = allTimestamps.map(fmtTime);
+
+  const datasets = symbols.map((symbol, i) => {
+    const rows = candlesMulti[symbol];
+    const base = rows[0].close;
+    const byTime = {};
+    rows.forEach(r => { byTime[r.timestamp] = ((r.close - base) / base) * 100; });
+
+    const pred = predBySymbol[symbol];
+    const isUp = pred ? pred.prob_up >= 0.5 : null;
+    const pct = pred ? (isUp ? pred.prob_up * 100 : (1 - pred.prob_up) * 100) : null;
+    const label = pred ? `${symbol} ${isUp ? "▲" : "▼"} ${pct.toFixed(0)}%` : symbol;
+    const color = SIGNAL_PALETTE[i % SIGNAL_PALETTE.length];
+
+    return {
+      label, symbolName: symbol,
+      data: allTimestamps.map(t => byTime[t] ?? null),
+      borderColor: color, backgroundColor: color,
+      spanGaps: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5,
+      borderDash: pred && !isUp ? [4, 3] : [],
+    };
+  });
+
+  ensureChart("chart-signal", {
+    type: "line",
+    data: { labels: labelText, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: "#e6e8ec", boxWidth: 12 } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.symbolName}: ${c.parsed.y >= 0 ? "+" : ""}${c.parsed.y.toFixed(2)}% since window start` } },
       },
       scales: {
         x: { ticks: { color: "#8a91a3", maxTicksLimit: 12 }, grid: { color: "#1f2530" } },
@@ -512,6 +574,7 @@ async function refresh() {
       fetchJSON(`/api/near_misses?hours=${state.hours}`),
       fetchJSON(`/api/predictions`),
       fetchJSON(`/api/models`),
+      fetchJSON(`/api/candles_multi?hours=${state.hours}`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
@@ -522,14 +585,15 @@ async function refresh() {
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models] = results;
+    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti] = results;
 
     renderStats(stats);
-    renderOpportunities(opportunities);
+    renderSignal(candlesMulti, predictions);
     renderPrice(candles);
     renderNearMisses(nearMisses);
     renderPredictions(predictions);
     renderModels(models);
+    renderOpportunities(opportunities);
 
     document.getElementById("status-dot").classList.remove("stale");
     document.getElementById("status-text").textContent = "live · updated " + fmtClock(new Date().toISOString()) + " SAST";

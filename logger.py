@@ -382,6 +382,26 @@ def get_recent_candles(symbol: str, hours: int = 24) -> list:
     return [{"timestamp": ts.isoformat(), "close": close} for ts, close in rows]
 
 
+def get_recent_candles_multi(symbols: list, hours: int = 24) -> dict:
+    """Same as get_recent_candles, for several symbols in one query - used by
+    the dashboard's multi-coin signal widget instead of one request per coin."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT symbol, candle_start, close
+        FROM market_candles
+        WHERE symbol = ANY(%s) AND candle_start > NOW() - make_interval(hours => %s)
+        ORDER BY candle_start ASC
+    """, (symbols, hours))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    result = {symbol: [] for symbol in symbols}
+    for symbol, ts, close in rows:
+        result[symbol].append({"timestamp": ts.isoformat(), "close": close})
+    return result
+
+
 def get_trained_models_json() -> list:
     """One row per model in trained_models, JSON-friendly, no blob included."""
     conn = _connect()

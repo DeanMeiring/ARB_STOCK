@@ -71,6 +71,13 @@ def api_candles(symbol: str = "BTCUSDT", hours: int = 24, _auth=Depends(require_
     return logger.get_recent_candles(symbol, hours)
 
 
+@app.get("/api/candles_multi")
+def api_candles_multi(hours: int = 24, _auth=Depends(require_auth)):
+    """Every config.PREDICT_SYMBOLS coin's candles in one call - feeds the
+    dashboard's multi-coin signal widget without a round trip per coin."""
+    return logger.get_recent_candles_multi(config.PREDICT_SYMBOLS, hours)
+
+
 @app.get("/api/models")
 def api_models(_auth=Depends(require_auth)):
     return logger.get_trained_models_json()
