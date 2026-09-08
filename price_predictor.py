@@ -80,7 +80,7 @@ def predict_all_text() -> str:
     if not ok:
         return "No trained models available yet - the daily training job hasn't produced one. Check back after it's run (06:00 UTC)."
 
-    lines = ["🔮 Price-trend predictions (next candle, probability of going up):"]
+    lines = ["🔮 Price-trend predictions (next hour, probability of going up):"]
     for r in ok:
         marker = " ⬆️" if r["prob_up"] >= config.PREDICT_UP_THRESHOLD else ""
         accuracy_str = f", model accuracy {r['accuracy']*100:.0f}%" if r.get("accuracy") is not None else ""

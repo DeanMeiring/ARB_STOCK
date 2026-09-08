@@ -1,7 +1,11 @@
 """
 Trains an XGBoost classifier per coin (config.PREDICT_SYMBOLS) predicting
-whether its next 1-minute candle closes higher than the current one, using
-market_candles history.
+whether price will be higher HORIZON_CANDLES (60 one-minute candles, i.e. an
+hour) from now than it is now, using market_candles history. Originally
+predicted just the next single 1-minute candle, which didn't match how
+prediction_tracker.py's paper-trading signal actually gets checked/acted on
+(config.PREDICTION_CHECK_INTERVAL_MINUTES) - raised to an hour on 2026-09-08
+so the probability and the decision cadence mean the same thing.
 
 All of config.PREDICT_SYMBOLS get organic candle collection from the live WS
 stream in main.py, but that alone would mean a freshly-added coin trains on
@@ -38,6 +42,11 @@ import logger
 from backfill_candles import fetch_binance_klines, BACKFILL_DAYS
 
 MIN_ROWS = 500
+# How many 1-minute candles ahead the target looks - see module docstring.
+# Keep in sync with config.PREDICTION_CHECK_INTERVAL_MINUTES (60): the
+# probability price_predictor reports should describe the same span of time
+# prediction_tracker.py actually waits between decisions.
+HORIZON_CANDLES = 60
 
 # Shared with price_predictor.py's inference path - keep both in sync if
 # either changes, they must compute features identically.
@@ -92,9 +101,18 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["hour_sin"] = np.sin(2 * np.pi * df["candle_start"].dt.hour / 24)
     df["hour_cos"] = np.cos(2 * np.pi * df["candle_start"].dt.hour / 24)
     df["day_of_week"] = df["candle_start"].dt.dayofweek
-    # target: does the NEXT candle close higher than this one?
-    df["target"] = (df["close"].shift(-1) > df["close"]).astype(int)
+    # target: is price higher HORIZON_CANDLES ahead than it is now? NaN (not
+    # False) for the last HORIZON_CANDLES rows, which have no future price to
+    # compare against - "shift(...) > x" silently evaluates a NaN comparison
+    # as False rather than NaN, so np.where makes that explicit here instead,
+    # to be dropped below rather than mislabeled "down". With HORIZON_CANDLES
+    # at 60 (vs the original 1) this now affects 60 rows per symbol instead
+    # of 1 - trivial against ~130k rows of backfilled history, but wrong is
+    # wrong.
+    future_close = df["close"].shift(-HORIZON_CANDLES)
+    df["target"] = np.where(future_close.notna(), future_close > df["close"], np.nan)
     df = df.dropna().reset_index(drop=True)
+    df["target"] = df["target"].astype(int)
     return df
 
 
@@ -140,7 +158,7 @@ def train_symbol(symbol: str) -> str:
     })
 
     up_rate = df["target"].mean()
-    return (f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% closed up historically, "
+    return (f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% were higher an hour later historically, "
             f"test AUC {auc_str}, accuracy {accuracy*100:.1f}%")
 
 
