@@ -483,6 +483,116 @@ def init_trading_tables():
     conn.close()
 
 
+def init_prediction_tracking():
+    """
+    prediction_log: every price_predictor call gets recorded here (see
+    prediction_tracker.py), then scored once its holding window elapses -
+    this is what /predict and the dashboard's "prediction accuracy today"
+    numbers are computed from. Pure paper tracking, no relation to
+    trades/governor_state above - no real order is ever involved.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS prediction_log (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            predicted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            prob_up DOUBLE PRECISION NOT NULL,
+            price_at_prediction DOUBLE PRECISION NOT NULL,
+            resolve_at TIMESTAMPTZ NOT NULL,
+            resolved BOOLEAN NOT NULL DEFAULT FALSE,
+            price_at_resolution DOUBLE PRECISION,
+            correct BOOLEAN,
+            pnl_usdt DOUBLE PRECISION
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def log_prediction(symbol: str, prob_up: float, price: float):
+    """Records one price_predictor call for later scoring - see
+    prediction_tracker.log_due_predictions()."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO prediction_log (symbol, prob_up, price_at_prediction, resolve_at)
+        VALUES (%s, %s, %s, NOW() + make_interval(mins => %s))
+    """, (symbol, prob_up, price, config.PREDICTION_HORIZON_MINUTES))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_due_predictions() -> list:
+    """Unresolved predictions whose holding window has elapsed - ready to be scored."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, symbol, price_at_prediction, prob_up
+        FROM prediction_log
+        WHERE NOT resolved AND resolve_at <= NOW()
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def get_latest_close(symbol: str):
+    """Most recent market_candles close for symbol, or None if there's no candle yet."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT close FROM market_candles WHERE symbol = %s ORDER BY candle_start DESC LIMIT 1", (symbol,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else None
+
+
+def resolve_prediction(pred_id: int, price_at_resolution: float, correct: bool, pnl_usdt: float):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE prediction_log
+        SET resolved = TRUE, price_at_resolution = %s, correct = %s, pnl_usdt = %s
+        WHERE id = %s
+    """, (price_at_resolution, correct, pnl_usdt, pred_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_todays_prediction_stats() -> dict:
+    """
+    Resolved-only tally of price_predictor's calls, for "today" in SAST
+    (South Africa Standard Time, UTC+2, no DST) - matching the dashboard's
+    display timezone, unlike get_todays_trade_stats' plain UTC day (a
+    separate, pre-existing convention for the live-trading governor that
+    this doesn't touch). Unresolved (still within their holding window)
+    calls aren't counted yet - they show up once resolved.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*), COALESCE(SUM(CASE WHEN correct THEN 1 ELSE 0 END), 0), COALESCE(SUM(pnl_usdt), 0)
+        FROM prediction_log
+        WHERE resolved
+          AND predicted_at > date_trunc('day', NOW() AT TIME ZONE 'Africa/Johannesburg') AT TIME ZONE 'Africa/Johannesburg'
+    """)
+    total, correct_count, pnl_usdt = cur.fetchone()
+    cur.close()
+    conn.close()
+    return {
+        "total": total,
+        "correct": correct_count,
+        "accuracy_pct": (correct_count / total * 100) if total else None,
+        "pnl_usdt": pnl_usdt,
+    }
+
+
 def log_trade(direction: str, expected_profit_pct: float, status: str, legs: list,
               start_usdt: float = None, end_usdt: float = None, profit_usdt: float = None, error: str = None):
     """

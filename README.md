@@ -38,24 +38,72 @@ but no order gets placed until that flag is flipped on purpose.
 - `/tradestatus` - governor state: kill switch, today's/cumulative P&L, trade count vs. the configured limits
 - `/halt <reason>` / `/resume` - manually stop/resume live execution
 
+`/predict` also appends today's prediction-accuracy tally and hypothetical
+P&L - see **Prediction accuracy tracking** below.
+
 ## Models
 
 `analyze_opportunity_model.py` and `analyze_price_trend_model.py` run daily
 (Railway cron, see the `opportunity-model` service) training XGBoost models
 on the accumulated `opportunities`/`near_misses`/`market_candles` history,
 saved to Postgres (`trained_models` - Railway's filesystem doesn't persist
-across deploys). `backfill_candles.py` is a one-off script to seed
-`market_candles` with deeper history than live collection alone would have.
+across deploys).
+
+Every training run tops each `config.PREDICT_SYMBOLS` coin's candle history
+up to a full `BACKFILL_DAYS` (90 days of 1-minute candles) via Binance's
+historical klines endpoint before training - not just the first time a coin
+is added, but every run, so an existing coin catches up too if `BACKFILL_DAYS`
+gets raised later (`analyze_price_trend_model.ensure_backfilled`). This is
+what gives the model more history to learn from without you remembering to
+run anything manually. `backfill_candles.py` remains as a standalone script
+if you want to run the same backfill outside a training pass (e.g. to seed
+a coin immediately after adding it, without waiting for the next cron run).
+
+Deeper history does mean more Postgres storage for `market_candles` - 90
+days x 1-minute candles x 7 coins is roughly 900k rows, a moderate but not
+huge footprint. If storage becomes a concern, `BACKFILL_DAYS` in
+`backfill_candles.py` is the one knob to turn down.
+
+## Prediction accuracy tracking
+
+Separately from the daily-retrained models above, `prediction_tracker.py`
+continuously checks *how the model's calls actually play out* - and what a
+hypothetical trade on every one of them would have made. Every
+`config.PREDICTION_LOG_INTERVAL_MINUTES` (default 5), for each
+`config.PREDICT_SYMBOLS` coin, it:
+
+1. Logs the model's current call (`price_at_prediction`, `prob_up`) to
+   Postgres (`prediction_log`), with a `resolve_at` time
+   `config.PREDICTION_HORIZON_MINUTES` later - "the window it had to sell".
+2. Once that window elapses, scores it against the live price then: correct
+   if the actual direction matched the call, and a hypothetical P&L as if
+   `config.TRADE_SIZE_USDT` had been traded long (on an "up" call) or short
+   (on a "down" call) over that window, fees included both ways.
+
+This never places a real order and is completely independent of
+`EXECUTE_TRADES`/`executor.py`/`governor.py` - it's purely a measurement of
+the model's real-world hit rate before you'd ever trust it with money.
+Today's tally (SAST) shows up in `/predict` and on the dashboard as
+"Prediction accuracy (today)" / "Hypothetical P&L (today)".
 
 ## Web dashboard
 
 `web.py` + `web/dashboard.html` serve a live dashboard on the same
 process/port Railway routes traffic to (`$PORT`, `config.DASHBOARD_PORT`,
-default 8080 locally) - no separate service needed. It shows stat tiles for
-both detectors, an opportunities profit-% chart, a BTCUSDT price chart, a
-near-miss trend chart with the threshold marked, and a table of trained
-models - all read live from the same Postgres tables the bot and cron jobs
-already write to, nothing extra stored for it.
+default 8080 locally) - no separate service needed. It's interactive: a
+time-range selector (1H/6H/24H/3D/7D) drives the time-windowed charts, a
+coin dropdown picks which symbol the single-coin price chart shows, and a
+manual refresh button/auto-refresh toggle sit alongside the usual 30s
+auto-refresh. All timestamps display in SAST (UTC+2), not UTC.
+
+It shows stat tiles for both detectors plus today's prediction accuracy and
+hypothetical P&L, a multi-coin signal chart (every tracked coin's price
+normalized to % change so wildly different price scales are comparable,
+colored/labeled by its latest up/down call), a single-coin price chart, a
+near-miss trend chart with the threshold marked, the price-trend prediction
+bars, a table of trained models, and the opportunities profit-% chart - all
+read live from the same Postgres tables the bot and cron jobs already write
+to, nothing extra stored for it.
 
 Set `DASHBOARD_PASSWORD` before this is exposed on a public URL - Railway
 will generate one once you enable networking for this service, and without

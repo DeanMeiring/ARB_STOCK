@@ -178,6 +178,18 @@ class TelegramNotifier:
             return
         import price_predictor  # deferred: pandas/xgboost only load when actually needed
         text = price_predictor.predict_all_text()
+
+        stats = logger.get_todays_prediction_stats()
+        if stats["total"]:
+            text += (
+                f"\n\n📈 Today's calls: {stats['correct']}/{stats['total']} correct "
+                f"({stats['accuracy_pct']:.0f}%), hypothetical P&L if every one were "
+                f"traded (${config.TRADE_SIZE_USDT:.0f}, {config.PREDICTION_HORIZON_MINUTES}min hold): "
+                f"${stats['pnl_usdt']:.2f}"
+            )
+        else:
+            text += "\n\n📈 No calls scored yet today - check back once some have had time to resolve."
+
         if config.DASHBOARD_URL:
             text += f"\n\n📈 Live dashboard: {config.DASHBOARD_URL}"
         self._send(chat_id, text)

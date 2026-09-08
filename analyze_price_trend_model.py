@@ -3,16 +3,15 @@ Trains an XGBoost classifier per coin (config.PREDICT_SYMBOLS) predicting
 whether its next 1-minute candle closes higher than the current one, using
 market_candles history.
 
-BTCUSDT/ETHUSDT get organic candle collection from the triangular detector's
-live WS stream (and can already have 30 days of backfilled depth - see
-backfill_candles.py). The rest of config.PREDICT_SYMBOLS
-(config.PREDICT_EXTRA_SYMBOLS) are subscribed on that same stream purely for
-this model, but a freshly-added symbol won't have organic history yet - this
-auto-backfills 30 days for any symbol short on rows before training, reusing
-backfill_candles.fetch_binance_klines (same Binance historical-klines
-endpoint), so a new coin produces a usable model on its very first run
-instead of needing a manually-remembered separate backfill or days of
-waiting for live accumulation.
+All of config.PREDICT_SYMBOLS get organic candle collection from the live WS
+stream in main.py, but that alone would mean a freshly-added coin trains on
+whatever thin window happened to accumulate since it was added. Every
+training run instead tops up each symbol to a full BACKFILL_DAYS-deep
+history first (ensure_backfilled, reusing backfill_candles.fetch_binance_klines
+- the same Binance historical-klines endpoint backfill_candles.py's one-off
+script uses), so a new coin gets a usable model on its very first run, and
+an existing one keeps training on the full configured window even if
+BACKFILL_DAYS gets raised later.
 
 Each trained model is saved to Postgres (logger.save_model) - Railway's
 filesystem doesn't persist across deploys/restarts - as its own row, keyed
@@ -61,14 +60,26 @@ def load_candles(symbol: str) -> pd.DataFrame:
     return df
 
 
-def ensure_backfilled(symbol: str, current_rows: int):
-    """Top up history via Binance's historical klines endpoint if this
-    symbol is short on organically-collected candles - see module docstring."""
-    if current_rows >= MIN_ROWS:
-        return
+def ensure_backfilled(symbol: str, df: pd.DataFrame):
+    """
+    Tops up history via Binance's historical klines endpoint whenever this
+    symbol's oldest candle doesn't yet reach back BACKFILL_DAYS - not just
+    the first time (a brand-new symbol with zero rows), but every training
+    run, so a coin that only ever got an earlier, shorter backfill (e.g.
+    before BACKFILL_DAYS was raised) catches up too. Idempotent - inserts
+    use ON CONFLICT DO NOTHING (see logger.bulk_log_candles), so re-running
+    this against a symbol that's already fully backfilled just fetches an
+    empty/tiny gap and no-ops.
+    """
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=BACKFILL_DAYS)
-    rows = fetch_binance_klines(symbol, int(start.timestamp() * 1000), int(end.timestamp() * 1000))
+    desired_start = end - timedelta(days=BACKFILL_DAYS)
+    earliest = df["candle_start"].min() if len(df) else None
+
+    if earliest is not None and earliest <= desired_start + timedelta(hours=1):
+        return  # already covers the full desired window
+
+    fetch_end = earliest if earliest is not None else end
+    rows = fetch_binance_klines(symbol, int(desired_start.timestamp() * 1000), int(fetch_end.timestamp() * 1000))
     logger.bulk_log_candles(rows)
 
 
@@ -89,9 +100,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def train_symbol(symbol: str) -> str:
     df = load_candles(symbol)
-    if len(df) < MIN_ROWS:
-        ensure_backfilled(symbol, len(df))
-        df = load_candles(symbol)  # re-read after backfill attempt
+    ensure_backfilled(symbol, df)
+    df = load_candles(symbol)  # re-read - picks up whatever ensure_backfilled just topped up, no-op otherwise
 
     if len(df) < MIN_ROWS:
         return f"{symbol}: only {len(df)} candles so far (need {MIN_ROWS}+) - too early to train."

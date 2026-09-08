@@ -18,7 +18,7 @@ from analyze_price_trend_model import FEATURE_COLS, model_name
 
 def predict_symbol(symbol: str):
     """
-    Returns a dict {symbol, prob_up, trained_at, auc, accuracy} on success,
+    Returns a dict {symbol, prob_up, trained_at, auc, accuracy, price} on success,
     or a plain string explaining why this symbol has no prediction right now
     (no trained model yet / not enough recent candles).
     """
@@ -58,6 +58,7 @@ def predict_symbol(symbol: str):
     return {
         "symbol": symbol, "prob_up": prob_up, "trained_at": trained_at,
         "auc": metadata.get("auc"), "accuracy": metadata.get("accuracy"),
+        "price": float(df.iloc[-1]["close"]),
     }
 
 

@@ -196,6 +196,23 @@ async def flush_candles_periodically():
             del candles_in_progress[symbol]
 
 
+async def prediction_tracking_loop():
+    """Every config.PREDICTION_LOG_INTERVAL_MINUTES, logs a fresh prediction
+    per coin and scores whatever earlier ones have reached their holding
+    window - see prediction_tracker.py. Blocking (pandas/xgboost, Postgres)
+    work is pushed to a thread so it never stalls the price stream, same
+    pattern as the Telegram poller."""
+    import prediction_tracker
+
+    while True:
+        await asyncio.sleep(config.PREDICTION_LOG_INTERVAL_MINUTES * 60)
+        try:
+            await asyncio.to_thread(prediction_tracker.resolve_due_predictions)
+            await asyncio.to_thread(prediction_tracker.log_due_predictions)
+        except Exception as e:
+            print(f"[prediction-tracker] error: {e}")
+
+
 async def watchdog():
     """
     Two independent checks on a 60s tick:
@@ -259,6 +276,7 @@ async def main():
     # /halt, /resume all read this, and the governor should be exercisable
     # end-to-end against Testnet before anyone flips EXECUTE_TRADES for real.
     logger.init_trading_tables()
+    logger.init_prediction_tracking()
     if config.EXECUTE_TRADES:
         print("*** EXECUTE_TRADES is ON - real orders will be placed against "
               f"{config.BINANCE_BASE_URL} ***")
@@ -268,6 +286,7 @@ async def main():
         notifier.poll_forever(),
         flush_near_miss_periodically(),
         flush_candles_periodically(),
+        prediction_tracking_loop(),
         watchdog(),
         dashboard_server(),
     )

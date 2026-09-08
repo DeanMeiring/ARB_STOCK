@@ -93,6 +93,13 @@ def api_config(_auth=Depends(require_auth)):
     }
 
 
+@app.get("/api/prediction_accuracy")
+def api_prediction_accuracy(_auth=Depends(require_auth)):
+    """Today's (SAST) tally of price_predictor's resolved calls - see
+    logger.get_todays_prediction_stats and prediction_tracker.py."""
+    return logger.get_todays_prediction_stats()
+
+
 @app.get("/api/predictions")
 def api_predictions(_auth=Depends(require_auth)):
     """Current price-trend prediction per coin - pandas/xgboost only load

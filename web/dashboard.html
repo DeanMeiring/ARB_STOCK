@@ -240,6 +240,16 @@
     <div class="value" id="tile-training">--</div>
     <div class="sub" id="tile-training-sub"></div>
   </div>
+  <div class="tile">
+    <div class="label">Prediction accuracy (today)</div>
+    <div class="value" id="tile-pred-accuracy">--</div>
+    <div class="sub" id="tile-pred-accuracy-sub"></div>
+  </div>
+  <div class="tile">
+    <div class="label">Hypothetical P&amp;L (today)</div>
+    <div class="value" id="tile-pred-pnl">--</div>
+    <div class="sub">if every call above were traded</div>
+  </div>
 </div>
 
 <div class="charts">
@@ -339,6 +349,28 @@ function renderStats(stats) {
     trainingEl.textContent = "never run";
     trainingSubEl.textContent = "";
   }
+}
+
+function renderPredictionAccuracy(stats) {
+  const accEl = document.getElementById("tile-pred-accuracy");
+  const accSubEl = document.getElementById("tile-pred-accuracy-sub");
+  const pnlEl = document.getElementById("tile-pred-pnl");
+  accEl.classList.remove("status-success", "status-failed");
+  pnlEl.classList.remove("status-success", "status-failed");
+
+  if (!stats.total) {
+    accEl.textContent = "no calls yet";
+    accSubEl.textContent = "";
+    pnlEl.textContent = "--";
+    return;
+  }
+
+  accEl.textContent = `${stats.accuracy_pct.toFixed(0)}%`;
+  accEl.classList.add(stats.accuracy_pct >= 50 ? "status-success" : "status-failed");
+  accSubEl.textContent = `${stats.correct}/${stats.total} calls, resolved`;
+
+  pnlEl.textContent = `${stats.pnl_usdt >= 0 ? "+" : ""}$${stats.pnl_usdt.toFixed(2)}`;
+  pnlEl.classList.add(stats.pnl_usdt >= 0 ? "status-success" : "status-failed");
 }
 
 function renderOpportunities(rows) {
@@ -575,6 +607,7 @@ async function refresh() {
       fetchJSON(`/api/predictions`),
       fetchJSON(`/api/models`),
       fetchJSON(`/api/candles_multi?hours=${state.hours}`),
+      fetchJSON(`/api/prediction_accuracy`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
@@ -585,9 +618,10 @@ async function refresh() {
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti] = results;
+    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy] = results;
 
     renderStats(stats);
+    renderPredictionAccuracy(predictionAccuracy);
     renderSignal(candlesMulti, predictions);
     renderPrice(candles);
     renderNearMisses(nearMisses);

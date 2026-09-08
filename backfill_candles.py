@@ -24,7 +24,13 @@ import requests
 import config
 import logger
 
-BACKFILL_DAYS = 30
+# 90 days of 1-minute candles per symbol (~130k rows) - deep enough to give
+# the price-trend model several distinct market regimes to learn from
+# instead of whatever few weeks happened to accumulate organically. Bigger
+# than this starts trading meaningfully more Postgres storage for training
+# data the model may not even weight heavily (recent regime usually matters
+# most) - 90 was picked as a middle ground, not a hard limit.
+BACKFILL_DAYS = 90
 # Triangular symbols (ETHBTC has no price-trend model, only used for the arb
 # loop) plus every coin the price-trend model trains on - deduped, in case
 # of overlap (BTCUSDT/ETHUSDT are in both).
