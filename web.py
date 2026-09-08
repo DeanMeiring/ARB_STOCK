@@ -93,6 +93,13 @@ def api_config(_auth=Depends(require_auth)):
     }
 
 
+@app.get("/api/threshold_crossings")
+def api_threshold_crossings(hours: int = 4, _auth=Depends(require_auth)):
+    """How many times a coin crossed >= config.PREDICT_UP_THRESHOLD in the
+    last `hours` - the dashboard's "Above 65% (last 4h)" tile."""
+    return logger.get_threshold_crossings(hours)
+
+
 @app.get("/api/paper_trades")
 def api_paper_trades(symbol: str = "BTCUSDT", hours: int = 24, _auth=Depends(require_auth)):
     """Every paper trade (open or closed) for one coin in the selected

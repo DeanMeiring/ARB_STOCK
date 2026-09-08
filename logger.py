@@ -558,6 +558,31 @@ def close_paper_trade(trade_id: int, price: float, prob_up: float, pnl_usdt: flo
     conn.close()
 
 
+def get_threshold_crossings(hours: int = 4) -> dict:
+    """How many times a coin's prediction crossed >= config.PREDICT_UP_THRESHOLD
+    in the last `hours` - i.e. paper_trades opened (see prediction_tracker.py's
+    entry side), not every tick it happened to stay above. Dashboard tile:
+    replaces the old "Triangular (total/24h)" stat, since the triangular
+    detector's fee-adjusted threshold structurally never clears on this
+    pair (see README) and this number is more actionable right now."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT symbol, COUNT(*)
+        FROM paper_trades
+        WHERE entry_at > NOW() - make_interval(hours => %s)
+        GROUP BY symbol
+        ORDER BY COUNT(*) DESC
+    """, (hours,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {
+        "count": sum(c for _, c in rows),
+        "by_symbol": {symbol: c for symbol, c in rows},
+    }
+
+
 def get_recent_paper_trades(symbol: str, hours: int = 24) -> list:
     """Every paper_trades row (open or closed) for symbol whose entry_at
     falls in the window, oldest first - feeds the dashboard's price-chart

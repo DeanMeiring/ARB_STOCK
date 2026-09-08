@@ -244,8 +244,9 @@
 
 <div class="tiles">
   <div class="tile">
-    <div class="label">Triangular (total / 24h)</div>
-    <div class="value" id="tile-tri">-- / --</div>
+    <div class="label">Above 65% (last 4h)</div>
+    <div class="value" id="tile-crossings">--</div>
+    <div class="sub" id="tile-crossings-sub"></div>
   </div>
   <div class="tile">
     <div class="label">Cross-exchange (total / 24h)</div>
@@ -354,7 +355,6 @@ async function fetchJSON(url) {
 }
 
 function renderStats(stats) {
-  document.getElementById("tile-tri").textContent = `${stats.triangular.total} / ${stats.triangular.last_24h}`;
   document.getElementById("tile-cross").textContent = `${stats.cross_exchange.total} / ${stats.cross_exchange.last_24h}`;
   document.getElementById("tile-subs").textContent = stats.subscribers;
 
@@ -370,6 +370,13 @@ function renderStats(stats) {
     trainingEl.textContent = "never run";
     trainingSubEl.textContent = "";
   }
+}
+
+function renderThresholdCrossings(data) {
+  document.getElementById("tile-crossings").textContent = data.count;
+  const bySymbol = data.by_symbol || {};
+  const parts = Object.entries(bySymbol).map(([s, c]) => `${s}: ${c}`);
+  document.getElementById("tile-crossings-sub").textContent = parts.length ? parts.join(", ") : "none in this window";
 }
 
 function renderPredictionAccuracy(stats) {
@@ -693,6 +700,7 @@ async function refresh() {
       fetchJSON(`/api/candles_multi?hours=${state.hours}`),
       fetchJSON(`/api/prediction_accuracy`),
       fetchJSON(`/api/paper_trades?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}`),
+      fetchJSON(`/api/threshold_crossings?hours=4`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
@@ -703,9 +711,10 @@ async function refresh() {
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades] = results;
+    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings] = results;
 
     renderStats(stats);
+    renderThresholdCrossings(thresholdCrossings);
     renderPredictionAccuracy(predictionAccuracy);
     renderSignal(candlesMulti, predictions);
     renderPrice(candles, paperTrades);
