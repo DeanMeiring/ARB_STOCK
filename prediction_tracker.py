@@ -34,9 +34,13 @@ def check_signals():
     never in the always-on detector's own import path."""
     import price_predictor
 
+    print(f"[prediction-tracker] checking {len(config.PREDICT_SYMBOLS)} symbols "
+          f"(threshold {config.PREDICT_UP_THRESHOLD*100:.0f}%)...")
+
     for symbol in config.PREDICT_SYMBOLS:
         result = price_predictor.predict_symbol(symbol)
         if not isinstance(result, dict):
+            print(f"[prediction-tracker] {symbol}: skipped - {result}")
             continue  # no trained model yet / not enough recent candles - nothing to act on
 
         prob_up, price = result["prob_up"], result["price"]
@@ -46,9 +50,17 @@ def check_signals():
         if open_trade is None:
             if signal_up:
                 logger.open_paper_trade(symbol, price, prob_up)
+                print(f"[prediction-tracker] BUY {symbol} @ {price} (prob_up {prob_up*100:.1f}%)")
+            else:
+                print(f"[prediction-tracker] {symbol}: prob_up {prob_up*100:.1f}%, no position, below threshold")
         elif not signal_up:
             move_pct = (price - open_trade["entry_price"]) / open_trade["entry_price"]
             raw_pnl = config.TRADE_SIZE_USDT * move_pct
             fee_cost = config.TRADE_SIZE_USDT * config.TAKER_FEE * 2  # entry + exit, hypothetical round trip
             pnl_usdt = raw_pnl - fee_cost
             logger.close_paper_trade(open_trade["id"], price, prob_up, pnl_usdt)
+            print(f"[prediction-tracker] SELL {symbol} @ {price} (prob_up {prob_up*100:.1f}%) "
+                  f"- entry {open_trade['entry_price']}, pnl ${pnl_usdt:.2f}")
+        else:
+            print(f"[prediction-tracker] {symbol}: prob_up {prob_up*100:.1f}%, still holding "
+                  f"(entry {open_trade['entry_price']})")
