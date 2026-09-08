@@ -179,16 +179,17 @@ class TelegramNotifier:
         import price_predictor  # deferred: pandas/xgboost only load when actually needed
         text = price_predictor.predict_all_text()
 
-        stats = logger.get_todays_prediction_stats()
+        stats = logger.get_todays_paper_trade_stats()
         if stats["total"]:
             text += (
-                f"\n\n📈 Today's calls: {stats['correct']}/{stats['total']} correct "
-                f"({stats['accuracy_pct']:.0f}%), hypothetical P&L if every one were "
-                f"traded (${config.TRADE_SIZE_USDT:.0f}, {config.PREDICTION_HORIZON_MINUTES}min hold): "
+                f"\n\n📈 Paper trades closed today: {stats['correct']}/{stats['total']} profitable "
+                f"({stats['accuracy_pct']:.0f}%), hypothetical P&L (${config.TRADE_SIZE_USDT:.0f}/trade): "
                 f"${stats['pnl_usdt']:.2f}"
             )
         else:
-            text += "\n\n📈 No calls scored yet today - check back once some have had time to resolve."
+            text += "\n\n📈 No paper trades closed yet today - one opens automatically once a coin crosses the threshold."
+        if stats["open_count"]:
+            text += f"\n{stats['open_count']} coin(s) currently in an open paper position."
 
         if config.DASHBOARD_URL:
             text += f"\n\n📈 Live dashboard: {config.DASHBOARD_URL}"

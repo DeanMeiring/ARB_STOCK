@@ -241,14 +241,14 @@
     <div class="sub" id="tile-training-sub"></div>
   </div>
   <div class="tile">
-    <div class="label">Prediction accuracy (today)</div>
+    <div class="label">Paper-trade win rate (today)</div>
     <div class="value" id="tile-pred-accuracy">--</div>
     <div class="sub" id="tile-pred-accuracy-sub"></div>
   </div>
   <div class="tile">
     <div class="label">Hypothetical P&amp;L (today)</div>
     <div class="value" id="tile-pred-pnl">--</div>
-    <div class="sub">if every call above were traded</div>
+    <div class="sub" id="tile-pred-pnl-sub">buy &gt;=threshold, sell &lt;threshold</div>
   </div>
 </div>
 
@@ -355,22 +355,27 @@ function renderPredictionAccuracy(stats) {
   const accEl = document.getElementById("tile-pred-accuracy");
   const accSubEl = document.getElementById("tile-pred-accuracy-sub");
   const pnlEl = document.getElementById("tile-pred-pnl");
+  const pnlSubEl = document.getElementById("tile-pred-pnl-sub");
   accEl.classList.remove("status-success", "status-failed");
   pnlEl.classList.remove("status-success", "status-failed");
 
+  const openNote = stats.open_count ? `${stats.open_count} open now` : "none open now";
+
   if (!stats.total) {
-    accEl.textContent = "no calls yet";
-    accSubEl.textContent = "";
+    accEl.textContent = "no trades yet";
+    accSubEl.textContent = openNote;
     pnlEl.textContent = "--";
+    pnlSubEl.textContent = "buy >=threshold, sell <threshold";
     return;
   }
 
   accEl.textContent = `${stats.accuracy_pct.toFixed(0)}%`;
   accEl.classList.add(stats.accuracy_pct >= 50 ? "status-success" : "status-failed");
-  accSubEl.textContent = `${stats.correct}/${stats.total} calls, resolved`;
+  accSubEl.textContent = `${stats.correct}/${stats.total} closed trades profitable · ${openNote}`;
 
   pnlEl.textContent = `${stats.pnl_usdt >= 0 ? "+" : ""}$${stats.pnl_usdt.toFixed(2)}`;
   pnlEl.classList.add(stats.pnl_usdt >= 0 ? "status-success" : "status-failed");
+  pnlSubEl.textContent = "buy >=threshold, sell <threshold";
 }
 
 function renderOpportunities(rows) {

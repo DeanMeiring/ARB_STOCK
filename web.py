@@ -95,9 +95,9 @@ def api_config(_auth=Depends(require_auth)):
 
 @app.get("/api/prediction_accuracy")
 def api_prediction_accuracy(_auth=Depends(require_auth)):
-    """Today's (SAST) tally of price_predictor's resolved calls - see
-    logger.get_todays_prediction_stats and prediction_tracker.py."""
-    return logger.get_todays_prediction_stats()
+    """Today's (SAST) tally of paper_trades closed by prediction_tracker.py's
+    threshold-crossing signal - see logger.get_todays_paper_trade_stats."""
+    return logger.get_todays_paper_trade_stats()
 
 
 @app.get("/api/predictions")

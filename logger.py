@@ -485,104 +485,104 @@ def init_trading_tables():
 
 def init_prediction_tracking():
     """
-    prediction_log: every price_predictor call gets recorded here (see
-    prediction_tracker.py), then scored once its holding window elapses -
-    this is what /predict and the dashboard's "prediction accuracy today"
-    numbers are computed from. Pure paper tracking, no relation to
-    trades/governor_state above - no real order is ever involved.
+    paper_trades: prediction_tracker.py's simulated long, one open position
+    per symbol at a time - opened the moment prob_up crosses >=
+    config.PREDICT_UP_THRESHOLD, closed the moment it drops back below.
+    Pure paper tracking, no relation to trades/governor_state above - no
+    real order is ever involved.
     """
     conn = _connect()
     cur = conn.cursor()
+    # Superseded by paper_trades below (fixed-horizon design, replaced by a
+    # signal-driven one) - drops the few minutes of test data it collected,
+    # nothing of value lost.
+    cur.execute("DROP TABLE IF EXISTS prediction_log")
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS prediction_log (
+        CREATE TABLE IF NOT EXISTS paper_trades (
             id SERIAL PRIMARY KEY,
             symbol TEXT NOT NULL,
-            predicted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            prob_up DOUBLE PRECISION NOT NULL,
-            price_at_prediction DOUBLE PRECISION NOT NULL,
-            resolve_at TIMESTAMPTZ NOT NULL,
-            resolved BOOLEAN NOT NULL DEFAULT FALSE,
-            price_at_resolution DOUBLE PRECISION,
-            correct BOOLEAN,
+            entry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            entry_price DOUBLE PRECISION NOT NULL,
+            entry_prob_up DOUBLE PRECISION NOT NULL,
+            open BOOLEAN NOT NULL DEFAULT TRUE,
+            exit_at TIMESTAMPTZ,
+            exit_price DOUBLE PRECISION,
+            exit_prob_up DOUBLE PRECISION,
             pnl_usdt DOUBLE PRECISION
         )
     """)
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def log_prediction(symbol: str, prob_up: float, price: float):
-    """Records one price_predictor call for later scoring - see
-    prediction_tracker.log_due_predictions()."""
-    conn = _connect()
-    cur = conn.cursor()
+    # One open position per symbol at a time - enforced here (a partial
+    # unique index only over open rows), not in application code alone.
     cur.execute("""
-        INSERT INTO prediction_log (symbol, prob_up, price_at_prediction, resolve_at)
-        VALUES (%s, %s, %s, NOW() + make_interval(mins => %s))
-    """, (symbol, prob_up, price, config.PREDICTION_HORIZON_MINUTES))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def get_due_predictions() -> list:
-    """Unresolved predictions whose holding window has elapsed - ready to be scored."""
-    conn = _connect()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, symbol, price_at_prediction, prob_up
-        FROM prediction_log
-        WHERE NOT resolved AND resolve_at <= NOW()
+        CREATE UNIQUE INDEX IF NOT EXISTS one_open_paper_trade_per_symbol
+        ON paper_trades (symbol) WHERE open
     """)
-    rows = cur.fetchall()
+    conn.commit()
     cur.close()
     conn.close()
-    return rows
 
 
-def get_latest_close(symbol: str):
-    """Most recent market_candles close for symbol, or None if there's no candle yet."""
+def get_open_paper_trade(symbol: str):
+    """{'id', 'entry_price'} if symbol currently has an open paper position, else None."""
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT close FROM market_candles WHERE symbol = %s ORDER BY candle_start DESC LIMIT 1", (symbol,))
+    cur.execute("SELECT id, entry_price FROM paper_trades WHERE symbol = %s AND open", (symbol,))
     row = cur.fetchone()
     cur.close()
     conn.close()
-    return row[0] if row else None
+    return {"id": row[0], "entry_price": row[1]} if row else None
 
 
-def resolve_prediction(pred_id: int, price_at_resolution: float, correct: bool, pnl_usdt: float):
+def open_paper_trade(symbol: str, price: float, prob_up: float):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
-        UPDATE prediction_log
-        SET resolved = TRUE, price_at_resolution = %s, correct = %s, pnl_usdt = %s
-        WHERE id = %s
-    """, (price_at_resolution, correct, pnl_usdt, pred_id))
+        INSERT INTO paper_trades (symbol, entry_price, entry_prob_up)
+        VALUES (%s, %s, %s)
+    """, (symbol, price, prob_up))
     conn.commit()
     cur.close()
     conn.close()
 
 
-def get_todays_prediction_stats() -> dict:
+def close_paper_trade(trade_id: int, price: float, prob_up: float, pnl_usdt: float):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE paper_trades
+        SET open = FALSE, exit_at = NOW(), exit_price = %s, exit_prob_up = %s, pnl_usdt = %s
+        WHERE id = %s
+    """, (price, prob_up, pnl_usdt, trade_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_todays_paper_trade_stats() -> dict:
     """
-    Resolved-only tally of price_predictor's calls, for "today" in SAST
-    (South Africa Standard Time, UTC+2, no DST) - matching the dashboard's
-    display timezone, unlike get_todays_trade_stats' plain UTC day (a
-    separate, pre-existing convention for the live-trading governor that
-    this doesn't touch). Unresolved (still within their holding window)
-    calls aren't counted yet - they show up once resolved.
+    Tally of paper_trades that CLOSED today, "today" in SAST (South Africa
+    Standard Time, UTC+2, no DST) - matching the dashboard's display
+    timezone, unlike get_todays_trade_stats' plain UTC day (a separate,
+    pre-existing convention for the live-trading governor that this doesn't
+    touch). A trade still open counts toward open_count but not into
+    today's P&L until it actually closes - that's when the result is real,
+    not a snapshot of an in-progress position.
+
+    "correct"/win here means the closed trade was profitable (pnl_usdt > 0)
+    after fees, not just direction - a technically-right call that lost
+    money to fees isn't counted as a win.
     """
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT COUNT(*), COALESCE(SUM(CASE WHEN correct THEN 1 ELSE 0 END), 0), COALESCE(SUM(pnl_usdt), 0)
-        FROM prediction_log
-        WHERE resolved
-          AND predicted_at > date_trunc('day', NOW() AT TIME ZONE 'Africa/Johannesburg') AT TIME ZONE 'Africa/Johannesburg'
+        SELECT COUNT(*), COALESCE(SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END), 0), COALESCE(SUM(pnl_usdt), 0)
+        FROM paper_trades
+        WHERE NOT open
+          AND exit_at > date_trunc('day', NOW() AT TIME ZONE 'Africa/Johannesburg') AT TIME ZONE 'Africa/Johannesburg'
     """)
     total, correct_count, pnl_usdt = cur.fetchone()
+    cur.execute("SELECT COUNT(*) FROM paper_trades WHERE open")
+    open_count = cur.fetchone()[0]
     cur.close()
     conn.close()
     return {
@@ -590,6 +590,7 @@ def get_todays_prediction_stats() -> dict:
         "correct": correct_count,
         "accuracy_pct": (correct_count / total * 100) if total else None,
         "pnl_usdt": pnl_usdt,
+        "open_count": open_count,
     }
 
 

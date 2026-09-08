@@ -197,18 +197,17 @@ async def flush_candles_periodically():
 
 
 async def prediction_tracking_loop():
-    """Every config.PREDICTION_LOG_INTERVAL_MINUTES, logs a fresh prediction
-    per coin and scores whatever earlier ones have reached their holding
-    window - see prediction_tracker.py. Blocking (pandas/xgboost, Postgres)
-    work is pushed to a thread so it never stalls the price stream, same
-    pattern as the Telegram poller."""
+    """Every config.PREDICTION_CHECK_INTERVAL_MINUTES, opens/closes paper
+    positions on each coin's prediction crossing config.PREDICT_UP_THRESHOLD
+    - see prediction_tracker.py. Blocking (pandas/xgboost, Postgres) work is
+    pushed to a thread so it never stalls the price stream, same pattern as
+    the Telegram poller."""
     import prediction_tracker
 
     while True:
-        await asyncio.sleep(config.PREDICTION_LOG_INTERVAL_MINUTES * 60)
+        await asyncio.sleep(config.PREDICTION_CHECK_INTERVAL_MINUTES * 60)
         try:
-            await asyncio.to_thread(prediction_tracker.resolve_due_predictions)
-            await asyncio.to_thread(prediction_tracker.log_due_predictions)
+            await asyncio.to_thread(prediction_tracker.check_signals)
         except Exception as e:
             print(f"[prediction-tracker] error: {e}")
 

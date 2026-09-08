@@ -64,27 +64,32 @@ days x 1-minute candles x 7 coins is roughly 900k rows, a moderate but not
 huge footprint. If storage becomes a concern, `BACKFILL_DAYS` in
 `backfill_candles.py` is the one knob to turn down.
 
-## Prediction accuracy tracking
+## Paper trading (prediction accuracy + hypothetical P&L)
 
 Separately from the daily-retrained models above, `prediction_tracker.py`
-continuously checks *how the model's calls actually play out* - and what a
-hypothetical trade on every one of them would have made. Every
-`config.PREDICTION_LOG_INTERVAL_MINUTES` (default 5), for each
-`config.PREDICT_SYMBOLS` coin, it:
+simulates one long position per coin, driven entirely by the model's own
+confidence rather than a fixed clock - prices (and the model's confidence)
+can move fast enough that a fixed hold time either exits too early or holds
+too long. Every `config.PREDICTION_CHECK_INTERVAL_MINUTES` (default 1), for
+each `config.PREDICT_SYMBOLS` coin, it re-checks the current `prob_up`
+against `config.PREDICT_UP_THRESHOLD` (the same 0.65 `/predict` already
+highlights coins at) and reacts to a crossing:
 
-1. Logs the model's current call (`price_at_prediction`, `prob_up`) to
-   Postgres (`prediction_log`), with a `resolve_at` time
-   `config.PREDICTION_HORIZON_MINUTES` later - "the window it had to sell".
-2. Once that window elapses, scores it against the live price then: correct
-   if the actual direction matched the call, and a hypothetical P&L as if
-   `config.TRADE_SIZE_USDT` had been traded long (on an "up" call) or short
-   (on a "down" call) over that window, fees included both ways.
+- **No open position, prob_up crosses >= threshold** -> "buys": opens a
+  paper position (`paper_trades`) at the current price.
+- **Open position, prob_up drops back below threshold** -> "sells": closes
+  it, scoring the hypothetical P&L of having held `config.TRADE_SIZE_USDT`
+  of it for however long the model stayed confident, fees included both ways.
+- Otherwise (still confident and already holding, or still unconfident and
+  not holding) - does nothing that tick.
 
 This never places a real order and is completely independent of
 `EXECUTE_TRADES`/`executor.py`/`governor.py` - it's purely a measurement of
-the model's real-world hit rate before you'd ever trust it with money.
-Today's tally (SAST) shows up in `/predict` and on the dashboard as
-"Prediction accuracy (today)" / "Hypothetical P&L (today)".
+whether this exact strategy would have made money before you'd ever trust it
+with real money. Today's tally (SAST) shows up in `/predict` and on the
+dashboard as "Paper-trade win rate (today)" / "Hypothetical P&L (today)" -
+a "win" means the closed trade was profitable after fees, not just
+directionally correct.
 
 ## Web dashboard
 

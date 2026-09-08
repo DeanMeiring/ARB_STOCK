@@ -134,19 +134,19 @@ PREDICT_SYMBOLS = ["BTCUSDT", "ETHUSDT"] + PREDICT_EXTRA_SYMBOLS
 # /predict calls out coins scoring >= this as a probability-of-up highlight.
 PREDICT_UP_THRESHOLD = 0.65
 
-# --- Prediction accuracy tracking (paper trading, no real orders) ---
-# Every PREDICTION_LOG_INTERVAL_MINUTES, prediction_tracker.py asks
-# price_predictor for each coin's current call and records it. Independent
-# of EXECUTE_TRADES/governor.py entirely - this never places an order, it
-# only measures how the model's calls would have played out.
-PREDICTION_LOG_INTERVAL_MINUTES = 5
-# How long after logging a call to check whether it was right, and how long
-# a hypothetical trade would have held the position - i.e. "the window it
-# had to sell". Deliberately not the same as the model's own training target
-# (next single 1-minute candle, see analyze_price_trend_model.py) since
-# that's too fast to ever act on for real - this is a more realistic hold
-# time for the "if we'd traded every call, what would today's P&L be" number.
-PREDICTION_HORIZON_MINUTES = 5
+# --- Paper trading (simulated trades on the model's own signal, no real orders) ---
+# prediction_tracker.py "buys" a coin (paper-only) the moment its prob_up
+# crosses >= PREDICT_UP_THRESHOLD, and "sells" the moment it drops back
+# below - a variable hold time driven entirely by the model's own confidence,
+# not a fixed clock, since prices (and the model's confidence) can swing
+# fast enough that a fixed window either exits too early or holds too long.
+# Independent of EXECUTE_TRADES/governor.py entirely - never places a real
+# order, only measures what this exact strategy would have made/lost.
+#
+# How often to re-check each coin's prediction and react to a threshold
+# crossing - as often as the underlying data resolution allows (candles are
+# 1-minute), so a crossing isn't missed for several minutes.
+PREDICTION_CHECK_INTERVAL_MINUTES = 1
 
 # --- Web dashboard ---
 # Railway injects PORT automatically once a public domain is generated for
