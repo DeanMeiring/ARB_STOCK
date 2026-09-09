@@ -264,8 +264,9 @@
     <div class="sub" id="tile-crossings-sub"></div>
   </div>
   <div class="tile">
-    <div class="label">Cross-exchange (total / 24h)</div>
-    <div class="value" id="tile-cross">-- / --</div>
+    <div class="label">Gross win rate (today, before fees)</div>
+    <div class="value" id="tile-gross-winrate">--</div>
+    <div class="sub" id="tile-gross-winrate-sub">price direction only, ignores fees</div>
   </div>
   <div class="tile">
     <div class="label">Telegram subscribers</div>
@@ -375,7 +376,6 @@ async function fetchJSON(url) {
 }
 
 function renderStats(stats) {
-  document.getElementById("tile-cross").textContent = `${stats.cross_exchange.total} / ${stats.cross_exchange.last_24h}`;
   document.getElementById("tile-subs").textContent = stats.subscribers;
 
   const trainingEl = document.getElementById("tile-training");
@@ -405,9 +405,12 @@ function renderPredictionAccuracy(stats) {
   const pnlEl = document.getElementById("tile-pred-pnl");
   const pnlSubEl = document.getElementById("tile-pred-pnl-sub");
   const lifetimeEl = document.getElementById("tile-pred-pnl-lifetime");
+  const grossEl = document.getElementById("tile-gross-winrate");
+  const grossSubEl = document.getElementById("tile-gross-winrate-sub");
   accEl.classList.remove("status-success", "status-failed");
   pnlEl.classList.remove("status-success", "status-failed");
   lifetimeEl.classList.remove("status-success", "status-failed");
+  grossEl.classList.remove("status-success", "status-failed");
 
   lifetimeEl.textContent = `${stats.lifetime_pnl_usdt >= 0 ? "+" : ""}$${stats.lifetime_pnl_usdt.toFixed(2)}`;
   lifetimeEl.classList.add(stats.lifetime_pnl_usdt >= 0 ? "status-success" : "status-failed");
@@ -419,6 +422,8 @@ function renderPredictionAccuracy(stats) {
     accSubEl.textContent = openNote;
     pnlEl.textContent = "--";
     pnlSubEl.textContent = "buy >=threshold, sell <threshold";
+    grossEl.textContent = "--";
+    grossSubEl.textContent = "price direction only, ignores fees";
     return;
   }
 
@@ -429,6 +434,13 @@ function renderPredictionAccuracy(stats) {
   pnlEl.textContent = `${stats.pnl_usdt >= 0 ? "+" : ""}$${stats.pnl_usdt.toFixed(2)}`;
   pnlEl.classList.add(stats.pnl_usdt >= 0 ? "status-success" : "status-failed");
   pnlSubEl.textContent = "buy >=threshold, sell <threshold";
+
+  grossEl.textContent = `${stats.gross_wins}/${stats.total}`;
+  grossEl.classList.add(stats.gross_win_rate_pct >= 50 ? "status-success" : "status-failed");
+  const feesEaten = stats.gross_wins - stats.correct;
+  grossSubEl.textContent = feesEaten > 0
+    ? `${stats.gross_win_rate_pct.toFixed(0)}% - fees turned ${feesEaten} win(s) into a loss`
+    : `${stats.gross_win_rate_pct.toFixed(0)}% - matches net win rate`;
 }
 
 function renderOpportunities(rows) {
