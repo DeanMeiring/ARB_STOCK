@@ -47,6 +47,10 @@ MIN_ROWS = 500
 # probability price_predictor reports should describe the same span of time
 # prediction_tracker.py actually waits between decisions.
 HORIZON_CANDLES = 60
+# Cap on how many days of volume-only backfill ensure_backfilled patches in
+# per training run - see its docstring for why this exists (an unbounded
+# fetch is what caused a run to hang without completing).
+VOLUME_BACKFILL_CHUNK_DAYS = 15
 
 # Shared with price_predictor.py's inference path - keep both in sync if
 # either changes, they must compute features identically.
@@ -88,25 +92,33 @@ def ensure_backfilled(symbol: str, df: pd.DataFrame):
     re-running this against a symbol that's already fully backfilled just
     fetches an empty/tiny gap and no-ops there.
 
-    Also re-fetches the FULL window (not just the old-end gap) whenever any
-    existing row is missing volume - e.g. every row collected before that
-    column existed. bulk_log_candles patches volume in on conflict (without
-    touching OHLC), so this is what retroactively backfills volume for
-    history that predates it, without a separate one-off migration script.
-    Once every row has volume, this check is a no-op again.
+    Also patches in volume for rows that predate that column, in bounded
+    VOLUME_BACKFILL_CHUNK_DAYS-sized chunks starting from the oldest still-
+    missing row - not the whole BACKFILL_DAYS window in one fetch. A single
+    all-at-once fetch (7 coins x 90 days each) is what caused a training run
+    to hang for 57+ minutes and never complete on 2026-09-09 - bounding it
+    means each run makes bounded, safe progress and the backlog clears over
+    several days instead of risking the whole run every time.
     """
     end = datetime.now(timezone.utc)
     desired_start = end - timedelta(days=BACKFILL_DAYS)
     earliest = df["candle_start"].min() if len(df) else None
-    missing_volume = len(df) > 0 and df["volume"].isna().any()
+    covers_window = earliest is not None and earliest <= desired_start + timedelta(hours=1)
 
-    if earliest is not None and earliest <= desired_start + timedelta(hours=1) and not missing_volume:
+    if not covers_window:
+        fetch_end = earliest if earliest is not None else end
+        rows = fetch_binance_klines(symbol, int(desired_start.timestamp() * 1000), int(fetch_end.timestamp() * 1000))
+        logger.bulk_log_candles(rows)
+        return
+
+    missing_volume_start = df.loc[df["volume"].isna(), "candle_start"].min() if len(df) else None
+    # .min() on an empty selection (no NaN rows) returns NaT, not None -
+    # pd.isna() catches both that and a genuine None from the empty-df case.
+    if pd.isna(missing_volume_start):
         return  # already covers the full desired window, with volume throughout
 
-    # Full window when volume needs patching anywhere in it, otherwise just
-    # the older gap between the desired start and what's already there.
-    fetch_end = end if missing_volume else (earliest if earliest is not None else end)
-    rows = fetch_binance_klines(symbol, int(desired_start.timestamp() * 1000), int(fetch_end.timestamp() * 1000))
+    fetch_end = min(end, missing_volume_start + timedelta(days=VOLUME_BACKFILL_CHUNK_DAYS))
+    rows = fetch_binance_klines(symbol, int(missing_volume_start.timestamp() * 1000), int(fetch_end.timestamp() * 1000))
     logger.bulk_log_candles(rows)
 
 
@@ -192,8 +204,16 @@ def train_symbol(symbol: str) -> str:
 
 
 def train() -> str:
-    """Trains every symbol in config.PREDICT_SYMBOLS, returns a combined summary."""
-    results = [train_symbol(symbol) for symbol in config.PREDICT_SYMBOLS]
+    """Trains every symbol in config.PREDICT_SYMBOLS, returns a combined
+    summary. Isolated per-symbol - one coin hitting a network hiccup or
+    slow fetch shouldn't take the whole run down and leave every other
+    coin (and the run's own recorded result) stuck on stale data too."""
+    results = []
+    for symbol in config.PREDICT_SYMBOLS:
+        try:
+            results.append(train_symbol(symbol))
+        except Exception as e:
+            results.append(f"{symbol}: training failed - {e}")
     return "Price-trend models:\n  " + "\n  ".join(results) + "\n\nAvailable via /predict in Telegram."
 
 
