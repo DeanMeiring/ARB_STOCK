@@ -75,6 +75,13 @@ class TelegramNotifier:
         self._api_base = f"https://api.telegram.org/bot{config.TELEGRAM_API_BOT}"
         self._offset = 0
 
+    def _redact(self, message: str) -> str:
+        """requests exceptions stringify the full request URL, which embeds
+        our bot token via self._api_base - strip it before ever printing an
+        exception, so it doesn't end up sitting in Railway's logs (which it
+        did, repeatedly, before this)."""
+        return message.replace(config.TELEGRAM_API_BOT, "***") if config.TELEGRAM_API_BOT else message
+
     async def poll_forever(self):
         if not config.TELEGRAM_API_BOT:
             print("[telegram] TELEGRAM_API_BOT not set - notifications disabled")
@@ -85,7 +92,7 @@ class TelegramNotifier:
                 for update in updates:
                     self._handle_update(update)
             except Exception as e:
-                print(f"[telegram] poll error: {e}")
+                print(f"[telegram] poll error: {self._redact(str(e))}")
                 await asyncio.sleep(5)
 
     def _get_updates(self):
@@ -287,7 +294,7 @@ class TelegramNotifier:
                 payload["text"] = text
             requests.post(f"{self._api_base}/answerCallbackQuery", json=payload, timeout=10)
         except Exception as e:
-            print(f"[telegram] answerCallbackQuery error: {e}")
+            print(f"[telegram] answerCallbackQuery error: {self._redact(str(e))}")
 
     def _send(self, chat_id, text, reply_markup=None):
         try:
@@ -300,7 +307,7 @@ class TelegramNotifier:
                 timeout=10,
             )
         except Exception as e:
-            print(f"[telegram] send error: {e}")
+            print(f"[telegram] send error: {self._redact(str(e))}")
 
     async def notify_opportunity(self, result):
         text = (
