@@ -205,6 +205,21 @@
   .trade-row .pnl.status-success { color: var(--green); font-weight: 600; }
   .trade-row .pnl.status-failed { color: var(--red); font-weight: 600; }
   .trade-row .pnl.open { color: var(--accent); font-weight: 600; }
+  .price-tag {
+    margin-left: 8px;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--card-border);
+  }
+  .price-tag.up { color: var(--green); border-color: var(--green); }
+  .price-tag.down { color: var(--red); border-color: var(--red); }
+  .fees-note {
+    margin-left: 8px;
+    font-size: 11px;
+    color: var(--accent);
+    font-style: italic;
+  }
   footer {
     margin-top: 24px;
     text-align: center;
@@ -592,8 +607,17 @@ function renderTradesList(trades) {
     }
     const exit = `${fmtTime(t.exit_at)} @ ${t.exit_price}`;
     const pnlClass = t.pnl_usdt >= 0 ? "status-success" : "status-failed";
-    const pnlText = `${t.pnl_usdt >= 0 ? "+" : ""}$${t.pnl_usdt.toFixed(2)}`;
-    return `<div class="trade-row"><span>▲ ${entry} &rarr; ▼ ${exit}</span><span class="pnl ${pnlClass}">${pnlText}</span></div>`;
+    const pnlText = `${t.pnl_usdt >= 0 ? "+" : "-"}$${Math.abs(t.pnl_usdt).toFixed(2)}`;
+
+    const priceUp = t.exit_price > t.entry_price;
+    const priceMovePct = ((t.exit_price - t.entry_price) / t.entry_price) * 100;
+    const priceTag = priceUp
+      ? `<span class="price-tag up">price &uarr; ${priceMovePct >= 0 ? "+" : ""}${priceMovePct.toFixed(2)}%</span>`
+      : `<span class="price-tag down">price &darr; ${priceMovePct.toFixed(2)}%</span>`;
+    const feesNote = (priceUp && t.pnl_usdt < 0)
+      ? `<span class="fees-note">price was up - fees ate the gain</span>` : "";
+
+    return `<div class="trade-row"><span>▲ ${entry} &rarr; ▼ ${exit} ${priceTag}${feesNote}</span><span class="pnl ${pnlClass}">${pnlText}</span></div>`;
   }).join("");
   listEl.innerHTML = rowsHtml;
 }
