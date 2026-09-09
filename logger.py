@@ -621,30 +621,39 @@ def get_todays_paper_trade_stats() -> dict:
 
     "correct"/win here means the closed trade was profitable (pnl_usdt > 0)
     after fees, not just direction - a technically-right call that lost
-    money to fees isn't counted as a win. "gross_wins" is the fee-free
-    counterpart: exit_price > entry_price regardless of what fees did to
-    pnl_usdt - so a trade can count toward gross_wins but not "correct" if
-    fees ate a small gain (see the dashboard's price-direction tags on the
-    trades list for the same distinction, per-trade).
+    money to fees isn't counted as a win.
+
+    gross_wins/gross_win_rate_pct are the fee-free counterpart - exit_price
+    > entry_price regardless of what fees did to pnl_usdt - computed
+    LIFETIME (every closed trade ever), not just today, since the point is
+    "is the model directionally right more often than the P&L suggests" and
+    that's a steadier read over more trades than just today's handful (see
+    the dashboard's per-trade price-direction tags in the trades list for
+    the same distinction on a single trade).
     """
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
         SELECT COUNT(*),
                COALESCE(SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END), 0),
-               COALESCE(SUM(pnl_usdt), 0),
-               COALESCE(SUM(CASE WHEN exit_price > entry_price THEN 1 ELSE 0 END), 0)
+               COALESCE(SUM(pnl_usdt), 0)
         FROM paper_trades
         WHERE NOT open
           AND exit_at > date_trunc('day', NOW() AT TIME ZONE 'Africa/Johannesburg') AT TIME ZONE 'Africa/Johannesburg'
     """)
-    total, correct_count, pnl_usdt, gross_wins = cur.fetchone()
+    total, correct_count, pnl_usdt = cur.fetchone()
     cur.execute("SELECT COUNT(*) FROM paper_trades WHERE open")
     open_count = cur.fetchone()[0]
     # Lifetime = every closed trade ever, not just today's SAST window -
     # same "closed only" rule as above, just with no date filter.
-    cur.execute("SELECT COALESCE(SUM(pnl_usdt), 0) FROM paper_trades WHERE NOT open")
-    lifetime_pnl_usdt = cur.fetchone()[0]
+    cur.execute("""
+        SELECT COALESCE(SUM(pnl_usdt), 0),
+               COUNT(*),
+               COALESCE(SUM(CASE WHEN exit_price > entry_price THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END), 0)
+        FROM paper_trades WHERE NOT open
+    """)
+    lifetime_pnl_usdt, lifetime_total, lifetime_gross_wins, lifetime_correct = cur.fetchone()
     cur.close()
     conn.close()
     return {
@@ -654,8 +663,10 @@ def get_todays_paper_trade_stats() -> dict:
         "pnl_usdt": pnl_usdt,
         "open_count": open_count,
         "lifetime_pnl_usdt": lifetime_pnl_usdt,
-        "gross_wins": gross_wins,
-        "gross_win_rate_pct": (gross_wins / total * 100) if total else None,
+        "lifetime_total": lifetime_total,
+        "lifetime_gross_wins": lifetime_gross_wins,
+        "lifetime_gross_win_rate_pct": (lifetime_gross_wins / lifetime_total * 100) if lifetime_total else None,
+        "lifetime_correct": lifetime_correct,
     }
 
 

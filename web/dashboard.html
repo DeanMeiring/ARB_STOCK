@@ -264,7 +264,7 @@
     <div class="sub" id="tile-crossings-sub"></div>
   </div>
   <div class="tile">
-    <div class="label">Gross win rate (today, before fees)</div>
+    <div class="label">Gross win rate (lifetime, before fees)</div>
     <div class="value" id="tile-gross-winrate">--</div>
     <div class="sub" id="tile-gross-winrate-sub">price direction only, ignores fees</div>
   </div>
@@ -417,13 +417,23 @@ function renderPredictionAccuracy(stats) {
 
   const openNote = stats.open_count ? `${stats.open_count} open now` : "none open now";
 
+  if (!stats.lifetime_total) {
+    grossEl.textContent = "--";
+    grossSubEl.textContent = "price direction only, ignores fees";
+  } else {
+    grossEl.textContent = `${stats.lifetime_gross_win_rate_pct.toFixed(0)}%`;
+    grossEl.classList.add(stats.lifetime_gross_win_rate_pct >= 50 ? "status-success" : "status-failed");
+    const feesEaten = stats.lifetime_gross_wins - stats.lifetime_correct;
+    grossSubEl.textContent = feesEaten > 0
+      ? `${stats.lifetime_gross_wins}/${stats.lifetime_total} · fees turned ${feesEaten} win(s) into a loss`
+      : `${stats.lifetime_gross_wins}/${stats.lifetime_total} · matches net win rate`;
+  }
+
   if (!stats.total) {
     accEl.textContent = "no trades yet";
     accSubEl.textContent = openNote;
     pnlEl.textContent = "--";
     pnlSubEl.textContent = "buy >=threshold, sell <threshold";
-    grossEl.textContent = "--";
-    grossSubEl.textContent = "price direction only, ignores fees";
     return;
   }
 
@@ -434,13 +444,6 @@ function renderPredictionAccuracy(stats) {
   pnlEl.textContent = `${stats.pnl_usdt >= 0 ? "+" : ""}$${stats.pnl_usdt.toFixed(2)}`;
   pnlEl.classList.add(stats.pnl_usdt >= 0 ? "status-success" : "status-failed");
   pnlSubEl.textContent = "buy >=threshold, sell <threshold";
-
-  grossEl.textContent = `${stats.gross_wins}/${stats.total}`;
-  grossEl.classList.add(stats.gross_win_rate_pct >= 50 ? "status-success" : "status-failed");
-  const feesEaten = stats.gross_wins - stats.correct;
-  grossSubEl.textContent = feesEaten > 0
-    ? `${stats.gross_win_rate_pct.toFixed(0)}% - fees turned ${feesEaten} win(s) into a loss`
-    : `${stats.gross_win_rate_pct.toFixed(0)}% - matches net win rate`;
 }
 
 function renderOpportunities(rows) {
