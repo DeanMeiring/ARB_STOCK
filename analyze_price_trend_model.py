@@ -50,7 +50,15 @@ HORIZON_CANDLES = 60
 
 # Shared with price_predictor.py's inference path - keep both in sync if
 # either changes, they must compute features identically.
-FEATURE_COLS = ["return_1", "return_5", "return_15", "volatility_15", "hour_sin", "hour_cos", "day_of_week"]
+# volume_ratio: current-minute volume vs its own trailing 15-minute average -
+# a busy vs quiet read, scale-invariant so it's comparable across coins with
+# wildly different raw volume (BTC vs DOGE). btc_return_5: BTCUSDT's own
+# 5-minute return at the same timestamp - BTC often moves first and alts
+# follow a few minutes later, so this gives every other coin's model a look
+# at what BTC just did (harmless near-duplicate of its own return_5 for the
+# BTCUSDT model itself).
+FEATURE_COLS = ["return_1", "return_5", "return_15", "volatility_15", "hour_sin", "hour_cos", "day_of_week",
+                "volume_ratio", "btc_return_5"]
 
 
 def model_name(symbol: str) -> str:
@@ -60,7 +68,7 @@ def model_name(symbol: str) -> str:
 def load_candles(symbol: str) -> pd.DataFrame:
     conn = psycopg2.connect(config.DATABASE_URL)
     df = pd.read_sql(
-        "SELECT candle_start, close FROM market_candles WHERE symbol = %(symbol)s ORDER BY candle_start",
+        "SELECT candle_start, close, volume FROM market_candles WHERE symbol = %(symbol)s ORDER BY candle_start",
         conn, params={"symbol": symbol}, parse_dates=["candle_start"],
     )
     conn.close()
@@ -76,23 +84,41 @@ def ensure_backfilled(symbol: str, df: pd.DataFrame):
     the first time (a brand-new symbol with zero rows), but every training
     run, so a coin that only ever got an earlier, shorter backfill (e.g.
     before BACKFILL_DAYS was raised) catches up too. Idempotent - inserts
-    use ON CONFLICT DO NOTHING (see logger.bulk_log_candles), so re-running
-    this against a symbol that's already fully backfilled just fetches an
-    empty/tiny gap and no-ops.
+    use ON CONFLICT DO NOTHING for OHLC (see logger.bulk_log_candles), so
+    re-running this against a symbol that's already fully backfilled just
+    fetches an empty/tiny gap and no-ops there.
+
+    Also re-fetches the FULL window (not just the old-end gap) whenever any
+    existing row is missing volume - e.g. every row collected before that
+    column existed. bulk_log_candles patches volume in on conflict (without
+    touching OHLC), so this is what retroactively backfills volume for
+    history that predates it, without a separate one-off migration script.
+    Once every row has volume, this check is a no-op again.
     """
     end = datetime.now(timezone.utc)
     desired_start = end - timedelta(days=BACKFILL_DAYS)
     earliest = df["candle_start"].min() if len(df) else None
+    missing_volume = len(df) > 0 and df["volume"].isna().any()
 
-    if earliest is not None and earliest <= desired_start + timedelta(hours=1):
-        return  # already covers the full desired window
+    if earliest is not None and earliest <= desired_start + timedelta(hours=1) and not missing_volume:
+        return  # already covers the full desired window, with volume throughout
 
-    fetch_end = earliest if earliest is not None else end
+    # Full window when volume needs patching anywhere in it, otherwise just
+    # the older gap between the desired start and what's already there.
+    fetch_end = end if missing_volume else (earliest if earliest is not None else end)
     rows = fetch_binance_klines(symbol, int(desired_start.timestamp() * 1000), int(fetch_end.timestamp() * 1000))
     logger.bulk_log_candles(rows)
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def load_btc_lag_series() -> pd.DataFrame:
+    """BTCUSDT's own 5-minute return, indexed by candle_start - merged into
+    every coin's features as btc_return_5 (see FEATURE_COLS)."""
+    btc = load_candles("BTCUSDT")
+    btc["btc_return_5"] = btc["close"].pct_change(5)
+    return btc[["candle_start", "btc_return_5"]]
+
+
+def build_features(df: pd.DataFrame, btc_lag: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["return_1"] = df["close"].pct_change(1)
     df["return_5"] = df["close"].pct_change(5)
@@ -101,6 +127,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df["hour_sin"] = np.sin(2 * np.pi * df["candle_start"].dt.hour / 24)
     df["hour_cos"] = np.cos(2 * np.pi * df["candle_start"].dt.hour / 24)
     df["day_of_week"] = df["candle_start"].dt.dayofweek
+    df["volume_ma_15"] = df["volume"].rolling(15).mean()
+    df["volume_ratio"] = df["volume"] / df["volume_ma_15"]
+    df = df.merge(btc_lag, on="candle_start", how="left")
     # target: is price higher HORIZON_CANDLES ahead than it is now? NaN (not
     # False) for the last HORIZON_CANDLES rows, which have no future price to
     # compare against - "shift(...) > x" silently evaluates a NaN comparison
@@ -124,7 +153,7 @@ def train_symbol(symbol: str) -> str:
     if len(df) < MIN_ROWS:
         return f"{symbol}: only {len(df)} candles so far (need {MIN_ROWS}+) - too early to train."
 
-    df = build_features(df)
+    df = build_features(df, load_btc_lag_series())
     X, y = df[FEATURE_COLS], df["target"]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 

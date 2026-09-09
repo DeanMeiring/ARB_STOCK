@@ -40,7 +40,10 @@ BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 
 def fetch_binance_klines(symbol: str, start_ms: int, end_ms: int) -> list:
     """Paginates 1000-candle pages until end_ms is reached. Returns
-    (symbol, candle_start, open, high, low, close, tick_count) tuples."""
+    (symbol, candle_start, open, high, low, close, tick_count, volume) tuples -
+    volume is index 5 of Binance's kline array, always present regardless of
+    symbol, so this captures it for every backfill, not just PREDICT_SYMBOLS
+    (harmless/unused for symbols with no price-trend model, e.g. ETHBTC)."""
     rows = []
     cursor = start_ms
     while cursor < end_ms:
@@ -53,9 +56,9 @@ def fetch_binance_klines(symbol: str, start_ms: int, end_ms: int) -> list:
         if not batch:
             break
         for k in batch:
-            open_time_ms, o, h, l, c = k[0], k[1], k[2], k[3], k[4]
+            open_time_ms, o, h, l, c, v = k[0], k[1], k[2], k[3], k[4], k[5]
             candle_start = datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc)
-            rows.append((symbol, candle_start, float(o), float(h), float(l), float(c), None))
+            rows.append((symbol, candle_start, float(o), float(h), float(l), float(c), None, float(v)))
         cursor = batch[-1][0] + 60_000  # advance past the last candle's open time
         time.sleep(0.2)  # stay well clear of rate limits
     return rows
@@ -92,6 +95,7 @@ def backfill_cryptocom():
             rows.append((
                 "CRYPTOCOM_BTC_USDT", candle_start,
                 float(c["o"]), float(c["h"]), float(c["l"]), float(c["c"]), None,
+                float(c["v"]) if c.get("v") is not None else None,
             ))
         logger.bulk_log_candles(rows)
         print(f"  {len(rows)} Crypto.com candles written.")

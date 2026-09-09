@@ -81,6 +81,12 @@ def init_db():
             UNIQUE (symbol, candle_start)
         )
     """)
+    # Traded volume for that minute - NULL for rows collected before this
+    # was added. bookTicker (main.py's live price feed) carries no volume,
+    # so live rows get it from a separate kline_1m WS stream
+    # (BinanceKlineVolumeStream in binance_client.py); backfilled rows get
+    # it straight from Binance's REST klines response.
+    cur.execute("ALTER TABLE market_candles ADD COLUMN IF NOT EXISTS volume DOUBLE PRECISION")
 
     # Trained model artifacts - Railway's filesystem doesn't persist across
     # deploys/restarts, so the serialized model lives here instead of on
@@ -299,14 +305,15 @@ def get_latest_training_run():
     return row
 
 
-def log_candle(symbol: str, candle_start, open_: float, high: float, low: float, close: float, tick_count: int):
+def log_candle(symbol: str, candle_start, open_: float, high: float, low: float, close: float, tick_count: int,
+               volume: float = None):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO market_candles (symbol, candle_start, open, high, low, close, tick_count)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO market_candles (symbol, candle_start, open, high, low, close, tick_count, volume)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (symbol, candle_start) DO NOTHING
-    """, (symbol, candle_start, open_, high, low, close, tick_count))
+    """, (symbol, candle_start, open_, high, low, close, tick_count, volume))
     conn.commit()
     cur.close()
     conn.close()
@@ -779,18 +786,28 @@ def set_kill_switch(killed: bool, reason: str = None):
 
 def bulk_log_candles(rows: list):
     """
-    rows: list of (symbol, candle_start, open, high, low, close, tick_count)
+    rows: list of (symbol, candle_start, open, high, low, close, tick_count, volume)
     tuples. For backfilling thousands of historical candles at once - one
     connection for the whole batch instead of one per row.
+
+    On a conflict (row already exists - e.g. re-running a backfill that
+    overlaps organically-collected candles), only volume gets patched in,
+    and only when it was previously missing - never overwrites an existing
+    non-NULL volume (e.g. from live collection) with a re-fetched one, and
+    never touches OHLC/tick_count on an existing row. This is what lets
+    ensure_backfilled retroactively fill in volume for rows that already
+    existed before that column did, just by re-running the same fetch.
     """
     if not rows:
         return
     conn = _connect()
     cur = conn.cursor()
     psycopg2.extras.execute_values(cur, """
-        INSERT INTO market_candles (symbol, candle_start, open, high, low, close, tick_count)
+        INSERT INTO market_candles (symbol, candle_start, open, high, low, close, tick_count, volume)
         VALUES %s
-        ON CONFLICT (symbol, candle_start) DO NOTHING
+        ON CONFLICT (symbol, candle_start) DO UPDATE
+        SET volume = EXCLUDED.volume
+        WHERE market_candles.volume IS NULL AND EXCLUDED.volume IS NOT NULL
     """, rows, page_size=1000)
     conn.commit()
     cur.close()

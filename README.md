@@ -64,6 +64,25 @@ days x 1-minute candles x 7 coins is roughly 900k rows, a moderate but not
 huge footprint. If storage becomes a concern, `BACKFILL_DAYS` in
 `backfill_candles.py` is the one knob to turn down.
 
+**Features** (`analyze_price_trend_model.FEATURE_COLS`): return over the
+last 1/5/15 candles, 15-candle return volatility, hour/day-of-week
+(cyclical), `volume_ratio` (this candle's traded volume vs its own trailing
+15-candle average - scale-invariant, so comparable across coins with very
+different raw volume), and `btc_return_5` (BTCUSDT's own 5-candle return at
+the same timestamp, on the idea that BTC often moves first and alts follow
+a few minutes later). Live volume comes from a second WebSocket connection
+(`binance_client.BinanceKlineVolumeStream`, kline_1m) - `bookTicker` (the
+feed everything else uses) carries no trade volume at all, only price.
+
+`market_candles` rows written before the `volume` column existed have it
+NULL; `ensure_backfilled` detects that and re-fetches the full
+`BACKFILL_DAYS` window once per coin to patch it in (idempotent - only
+overwrites a NULL, via `bulk_log_candles`'s `ON CONFLICT ... DO UPDATE`),
+so this happens automatically on the next training run rather than needing
+a separate migration - but that one-time full re-fetch (unlike the usual
+gap-only top-up) takes noticeably longer, so don't be surprised if a
+training run right after this shipped takes longer than usual.
+
 ## Paper trading (prediction accuracy + hypothetical P&L)
 
 Separately from the daily-retrained models above, `prediction_tracker.py`

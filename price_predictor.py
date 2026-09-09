@@ -30,9 +30,18 @@ def predict_symbol(symbol: str):
 
     conn = psycopg2.connect(config.DATABASE_URL)
     df = pd.read_sql(
-        "SELECT candle_start, close FROM market_candles WHERE symbol = %(symbol)s "
+        "SELECT candle_start, close, volume FROM market_candles WHERE symbol = %(symbol)s "
         "ORDER BY candle_start DESC LIMIT 30",
         conn, params={"symbol": symbol}, parse_dates=["candle_start"],
+    )
+    # Same btc_return_5 feature as training (see analyze_price_trend_model.
+    # load_btc_lag_series) - fetched here too since inference needs it live,
+    # not just at training time. Harmless extra query when symbol is itself
+    # BTCUSDT (re-reads the same data as df above).
+    btc_df = pd.read_sql(
+        "SELECT candle_start, close FROM market_candles WHERE symbol = 'BTCUSDT' "
+        "ORDER BY candle_start DESC LIMIT 30",
+        conn, parse_dates=["candle_start"],
     )
     conn.close()
 
@@ -48,6 +57,13 @@ def predict_symbol(symbol: str):
     df["hour_sin"] = np.sin(2 * np.pi * df["candle_start"].dt.hour / 24)
     df["hour_cos"] = np.cos(2 * np.pi * df["candle_start"].dt.hour / 24)
     df["day_of_week"] = df["candle_start"].dt.dayofweek
+    df["volume_ma_15"] = df["volume"].rolling(15).mean()
+    df["volume_ratio"] = df["volume"] / df["volume_ma_15"]
+
+    btc_df["candle_start"] = pd.to_datetime(btc_df["candle_start"], utc=True)
+    btc_df = btc_df.sort_values("candle_start").reset_index(drop=True)
+    btc_df["btc_return_5"] = btc_df["close"].pct_change(5)
+    df = df.merge(btc_df[["candle_start", "btc_return_5"]], on="candle_start", how="left")
 
     latest = df.iloc[[-1]][FEATURE_COLS]
     if latest.isnull().any(axis=1).iloc[0]:

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 import uvicorn
 import config
 import logger
-from binance_client import BinanceBookTickerStream
+from binance_client import BinanceBookTickerStream, BinanceKlineVolumeStream
 from arb_calculator import check_both_directions, check_cross_exchange
 import cryptocom_client
 from telegram_bot import TelegramNotifier
@@ -39,6 +39,10 @@ stats = {"ticks": 0, "opportunities": 0, "cross_exchange_opportunities": 0}
 
 notifier = TelegramNotifier()
 stream = BinanceBookTickerStream(config.SYMBOLS + config.PREDICT_EXTRA_SYMBOLS)
+# Volume for config.PREDICT_SYMBOLS' candles - see BinanceKlineVolumeStream's
+# docstring for why this is a second, independent WS connection rather than
+# reusing `stream` above (bookTicker carries no trade volume at all).
+volume_stream = BinanceKlineVolumeStream(config.PREDICT_SYMBOLS)
 
 # best sub-threshold result seen since the last flush, per source - not
 # persisted per-tick (hundreds/sec for the triangular side), just sampled
@@ -192,7 +196,11 @@ async def flush_candles_periodically():
     while True:
         await asyncio.sleep(60)
         for symbol, c in list(candles_in_progress.items()):
-            logger.log_candle(symbol, c["start"], c["open"], c["high"], c["low"], c["close"], c["count"])
+            # volume_stream only tracks config.PREDICT_SYMBOLS - None for
+            # everything else (e.g. ETHBTC, CRYPTOCOM_BTC_USDT), same as
+            # before this existed.
+            volume = volume_stream.latest_volume.get(symbol)
+            logger.log_candle(symbol, c["start"], c["open"], c["high"], c["low"], c["close"], c["count"], volume)
             del candles_in_progress[symbol]
 
 
@@ -281,6 +289,7 @@ async def main():
               f"{config.BINANCE_BASE_URL} ***")
     await asyncio.gather(
         stream.run(on_price_update),
+        volume_stream.run(),
         cross_exchange_watch(),
         notifier.poll_forever(),
         flush_near_miss_periodically(),
