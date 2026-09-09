@@ -33,6 +33,13 @@ security = HTTPBasic(auto_error=False)
 # timer itself does).
 prediction_schedule = {"next_check_at": None}
 
+# Set by prediction_tracker.check_signals() each time it actually runs (once
+# an hour) - a frozen snapshot of exactly what the paper-trading loop saw
+# and acted on, as opposed to /api/predictions' numbers which recompute
+# live on every dashboard refresh. Same in-process-only reasoning as
+# prediction_schedule above.
+last_check_snapshot = {"checked_at": None, "predictions": []}
+
 _DASHBOARD_HTML = (pathlib.Path(__file__).parent / "web" / "dashboard.html").read_text()
 
 
@@ -106,6 +113,17 @@ def api_prediction_schedule(_auth=Depends(require_auth)):
     coin's signal - see the prediction_schedule module-level dict above."""
     next_at = prediction_schedule["next_check_at"]
     return {"next_check_at": next_at.isoformat() if next_at else None}
+
+
+@app.get("/api/last_check_snapshot")
+def api_last_check_snapshot(_auth=Depends(require_auth)):
+    """The frozen prob_up per coin as of the last actual hourly check - see
+    the last_check_snapshot module-level dict above."""
+    checked_at = last_check_snapshot["checked_at"]
+    return {
+        "checked_at": checked_at.isoformat() if checked_at else None,
+        "predictions": last_check_snapshot["predictions"],
+    }
 
 
 @app.get("/api/threshold_crossings")

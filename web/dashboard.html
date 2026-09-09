@@ -321,8 +321,14 @@
 
   <div class="card full">
     <h2>Price-trend predictions &mdash; probability of going up</h2>
-    <p class="desc">Next-hour prediction per coin, from the daily-retrained models. Dashed = alert threshold.</p>
+    <p class="desc">Live - recomputes on every refresh (30s). This is NOT what the paper-trading loop acted on; see the frozen snapshot below for that. Dashed = alert threshold.</p>
     <div class="chart-wrap"><canvas id="chart-predictions"></canvas></div>
+  </div>
+
+  <div class="card full">
+    <h2 id="heading-last-check">Last hourly check &mdash; what the system actually saw</h2>
+    <p class="desc">Frozen at the moment prediction_tracking_loop last ran - only changes when the next real hourly check fires, unlike the live chart above. This is what actually decided each buy/sell/hold.</p>
+    <div class="chart-wrap"><canvas id="chart-last-check"></canvas></div>
   </div>
 
   <div class="card full">
@@ -737,6 +743,50 @@ function renderPredictions(rows) {
   });
 }
 
+function renderLastCheck(snapshot) {
+  const headingEl = document.getElementById("heading-last-check");
+  const wrap = document.getElementById("chart-last-check").parentElement;
+  const rows = snapshot.predictions || [];
+
+  if (!snapshot.checked_at || !rows.length) {
+    headingEl.textContent = "Last hourly check — what the system actually saw";
+    wrap.innerHTML = '<div class="empty">No check has happened yet since this deploy - see the "Next paper-trade check" tile above for when the first one is due.</div>';
+    return;
+  }
+
+  headingEl.textContent = `Last hourly check (${fmtDateTime(snapshot.checked_at)} SAST) — what the system actually saw`;
+  const labels = rows.map(r => r.symbol);
+  const values = rows.map(r => r.prob_up * 100);
+  const colors = values.map(v => v >= predictUpThresholdPct ? "#2ebd85" : "#5b8def");
+
+  ensureChart("chart-last-check", {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: "prob up %", data: values, backgroundColor: colors },
+        {
+          label: "threshold", type: "line",
+          data: labels.map(() => predictUpThresholdPct),
+          borderColor: "#8a91a3", borderDash: [5, 5], pointRadius: 0, borderWidth: 1,
+        },
+      ],
+    },
+    options: {
+      indexAxis: "y",
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.x.toFixed(1)}%` } },
+      },
+      scales: {
+        x: { min: 0, max: 100, ticks: { color: "#8a91a3", callback: (v) => v + "%" }, grid: { color: "#1f2530" } },
+        y: { ticks: { color: "#e6e8ec" }, grid: { display: false } },
+      },
+    },
+  });
+}
+
 function renderModels(models) {
   const el = document.getElementById("models-table");
   if (!models.length) {
@@ -770,6 +820,7 @@ async function refresh() {
       fetchJSON(`/api/paper_trades?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}`),
       fetchJSON(`/api/threshold_crossings?hours=4`),
       fetchJSON(`/api/prediction_schedule`),
+      fetchJSON(`/api/last_check_snapshot`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
@@ -780,11 +831,12 @@ async function refresh() {
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings, predictionSchedule] = results;
+    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings, predictionSchedule, lastCheckSnapshot] = results;
 
     renderStats(stats);
     renderThresholdCrossings(thresholdCrossings);
     renderNextCheck(predictionSchedule);
+    renderLastCheck(lastCheckSnapshot);
     renderPredictionAccuracy(predictionAccuracy);
     renderSignal(candlesMulti, predictions);
     renderPrice(candles, paperTrades);

@@ -24,8 +24,10 @@ logger.get_todays_paper_trade_stats() is what /predict and the dashboard
 read to show today's win rate and hypothetical P&L.
 """
 
+from datetime import datetime, timezone
 import config
 import logger
+from web import last_check_snapshot
 
 
 def check_signals():
@@ -37,6 +39,8 @@ def check_signals():
     print(f"[prediction-tracker] checking {len(config.PREDICT_SYMBOLS)} symbols "
           f"(threshold {config.PREDICT_UP_THRESHOLD*100:.0f}%)...")
 
+    snapshot = []
+
     for symbol in config.PREDICT_SYMBOLS:
         result = price_predictor.predict_symbol(symbol)
         if not isinstance(result, dict):
@@ -44,6 +48,7 @@ def check_signals():
             continue  # no trained model yet / not enough recent candles - nothing to act on
 
         prob_up, price = result["prob_up"], result["price"]
+        snapshot.append({"symbol": symbol, "prob_up": prob_up})
         open_trade = logger.get_open_paper_trade(symbol)
         signal_up = prob_up >= config.PREDICT_UP_THRESHOLD
 
@@ -64,3 +69,6 @@ def check_signals():
         else:
             print(f"[prediction-tracker] {symbol}: prob_up {prob_up*100:.1f}%, still holding "
                   f"(entry {open_trade['entry_price']})")
+
+    last_check_snapshot["checked_at"] = datetime.now(timezone.utc)
+    last_check_snapshot["predictions"] = sorted(snapshot, key=lambda r: r["prob_up"], reverse=True)
