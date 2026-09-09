@@ -141,7 +141,18 @@ def build_features(df: pd.DataFrame, btc_lag: pd.DataFrame) -> pd.DataFrame:
     df["day_of_week"] = df["candle_start"].dt.dayofweek
     df["volume_ma_15"] = df["volume"].rolling(15).mean()
     df["volume_ratio"] = df["volume"] / df["volume_ma_15"]
-    df = df.merge(btc_lag, on="candle_start", how="left")
+    # merge_asof (nearest BTC row at or before this one), not an exact
+    # candle_start match - backfilled rows for every symbol land on
+    # Binance's own clean per-minute grid so an exact merge looked fine in
+    # training, but live-collected candles are built independently per
+    # symbol (each one's own candle boundary is whenever its first tick
+    # after the last flush happened to arrive, not a shared wall-clock
+    # grid) and essentially never land on the same timestamp as BTCUSDT's -
+    # that left btc_return_5 NaN for every live prediction except BTCUSDT's
+    # own. tolerance bounds how stale a match can be if there's a gap.
+    df = df.sort_values("candle_start")
+    df = pd.merge_asof(df, btc_lag.sort_values("candle_start"), on="candle_start",
+                        direction="backward", tolerance=pd.Timedelta(minutes=5))
     # target: is price higher HORIZON_CANDLES ahead than it is now? NaN (not
     # False) for the last HORIZON_CANDLES rows, which have no future price to
     # compare against - "shift(...) > x" silently evaluates a NaN comparison

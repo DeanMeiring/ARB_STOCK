@@ -73,7 +73,13 @@ def predict_symbol(symbol: str):
     btc_df["candle_start"] = pd.to_datetime(btc_df["candle_start"], utc=True)
     btc_df = btc_df.sort_values("candle_start").reset_index(drop=True)
     btc_df["btc_return_5"] = btc_df["close"].pct_change(5)
-    df = df.merge(btc_df[["candle_start", "btc_return_5"]], on="candle_start", how="left")
+    # merge_asof (nearest BTC row at or before this one), not an exact
+    # candle_start match - see analyze_price_trend_model.build_features for
+    # why: live candles for different symbols essentially never land on the
+    # same timestamp as BTCUSDT's own, which left this NaN for every coin
+    # but BTCUSDT itself.
+    df = pd.merge_asof(df, btc_df[["candle_start", "btc_return_5"]], on="candle_start",
+                        direction="backward", tolerance=pd.Timedelta(minutes=5))
 
     latest = df.iloc[[-1]][FEATURE_COLS]
     if latest.isnull().any(axis=1).iloc[0]:
