@@ -380,7 +380,31 @@ let predictUpThresholdPct = 65;
 let autoRefreshTimer = null;
 const state = { hours: 24, symbol: "BTCUSDT" };
 
+// Empty-state helper for chart cards - hides the <canvas> and shows a
+// message NEXT TO it, rather than replacing the wrap's innerHTML (which
+// used to destroy the canvas element permanently, so the following refresh
+// that had real data crashed on document.getElementById(id) === null).
+function showEmpty(canvasId, message) {
+  const canvas = document.getElementById(canvasId);
+  canvas.style.display = "none";
+  let msg = canvas.parentElement.querySelector(".empty");
+  if (!msg) {
+    msg = document.createElement("div");
+    msg.className = "empty";
+    canvas.parentElement.appendChild(msg);
+  }
+  msg.textContent = message;
+}
+
+function clearEmpty(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  canvas.style.display = "";
+  const msg = canvas.parentElement.querySelector(".empty");
+  if (msg) msg.remove();
+}
+
 function ensureChart(id, cfg) {
+  clearEmpty(id);
   if (charts[id]) charts[id].destroy();
   charts[id] = new Chart(document.getElementById(id).getContext("2d"), cfg);
   return charts[id];
@@ -479,9 +503,8 @@ function renderPredictionAccuracy(stats) {
 
 function renderOpportunities(rows) {
   document.getElementById("heading-opportunities").textContent = `Detected opportunities — profit % (${RANGE_LABELS[state.hours]})`;
-  const wrap = document.getElementById("chart-opportunities").parentElement;
   if (!rows.length) {
-    wrap.innerHTML = `<div class="empty">No opportunities logged in this window yet.</div>`;
+    showEmpty("chart-opportunities", "No opportunities logged in this window yet.");
     return;
   }
   const labels = [...new Set(rows.map(r => r.timestamp))].sort();
@@ -521,14 +544,13 @@ function renderOpportunities(rows) {
 
 function renderSignal(candlesMulti, predictions) {
   document.getElementById("heading-signal").textContent = `Multi-coin signal (${RANGE_LABELS[state.hours]})`;
-  const wrap = document.getElementById("chart-signal").parentElement;
 
   const predBySymbol = {};
   predictions.forEach(p => { predBySymbol[p.symbol] = p; });
 
   const symbols = Object.keys(candlesMulti).filter(s => candlesMulti[s].length > 1);
   if (!symbols.length) {
-    wrap.innerHTML = '<div class="empty">No candle history in this window yet.</div>';
+    showEmpty("chart-signal", "No candle history in this window yet.");
     return;
   }
 
@@ -585,12 +607,11 @@ function nearestCandleIndex(rows, iso) {
 
 function renderPrice(rows, trades) {
   document.getElementById("heading-price").textContent = `${state.symbol} price (${RANGE_LABELS[state.hours]})`;
-  const wrap = document.getElementById("chart-price").parentElement;
   const listEl = document.getElementById("trades-list");
   trades = trades || [];
 
   if (!rows.length) {
-    wrap.innerHTML = '<div class="empty">No candle history in this window yet.</div>';
+    showEmpty("chart-price", "No candle history in this window yet.");
     listEl.innerHTML = "";
     return;
   }
@@ -696,9 +717,8 @@ function renderPredictionVsActual(rows) {
 
 function renderNearMisses(rows) {
   document.getElementById("heading-near-misses").textContent = `Near-miss trend (${RANGE_LABELS[state.hours]})`;
-  const wrap = document.getElementById("chart-near-misses").parentElement;
   if (!rows.length) {
-    wrap.innerHTML = '<div class="empty">No near-miss samples in this window yet.</div>';
+    showEmpty("chart-near-misses", "No near-miss samples in this window yet.");
     return;
   }
   const labels = [...new Set(rows.map(r => r.timestamp))].sort();
@@ -738,9 +758,8 @@ function renderNearMisses(rows) {
 }
 
 function renderPredictions(rows) {
-  const wrap = document.getElementById("chart-predictions").parentElement;
   if (!rows.length) {
-    wrap.innerHTML = '<div class="empty">No trained prediction models yet - check back after the daily training job runs (08:00 SAST).</div>';
+    showEmpty("chart-predictions", "No trained prediction models yet - check back after the daily training job runs (08:00 SAST).");
     return;
   }
   const labels = rows.map(r => r.symbol);
@@ -777,12 +796,11 @@ function renderPredictions(rows) {
 
 function renderLastCheck(snapshot) {
   const headingEl = document.getElementById("heading-last-check");
-  const wrap = document.getElementById("chart-last-check").parentElement;
   const rows = snapshot.predictions || [];
 
   if (!snapshot.checked_at || !rows.length) {
     headingEl.textContent = "Last hourly check — what the system actually saw";
-    wrap.innerHTML = '<div class="empty">No check has happened yet since this deploy - see the "Next paper-trade check" tile above for when the first one is due.</div>';
+    showEmpty("chart-last-check", 'No check has happened yet since this deploy - see the "Next paper-trade check" tile above for when the first one is due.');
     return;
   }
 
