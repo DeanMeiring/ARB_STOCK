@@ -524,9 +524,83 @@ def init_prediction_tracking():
         CREATE UNIQUE INDEX IF NOT EXISTS one_open_paper_trade_per_symbol
         ON paper_trades (symbol) WHERE open
     """)
+    # prediction_snapshots: what prediction_tracker.py saw for every symbol
+    # at every real hourly check, kept even for symbols that didn't cross
+    # the buy threshold (paper_trades only records the ones that did) -
+    # this is what lets the dashboard show predicted vs. actual price an
+    # hour later for every check, not just the ones that led to a trade.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS prediction_snapshots (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            checked_at TIMESTAMPTZ NOT NULL,
+            price DOUBLE PRECISION NOT NULL,
+            prob_up DOUBLE PRECISION NOT NULL,
+            predicted_up BOOLEAN NOT NULL,
+            UNIQUE (symbol, checked_at)
+        )
+    """)
     conn.commit()
     cur.close()
     conn.close()
+
+
+def log_prediction_snapshot(symbol: str, checked_at, price: float, prob_up: float, predicted_up: bool):
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO prediction_snapshots (symbol, checked_at, price, prob_up, predicted_up)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (symbol, checked_at) DO NOTHING
+    """, (symbol, checked_at, price, prob_up, predicted_up))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_prediction_vs_actual(hours: int = 48) -> list:
+    """Every prediction_snapshots row from the last `hours` whose hour has
+    actually elapsed, paired with the closest market_candles close within
+    +/-5 minutes of checked_at + 1h - i.e. what price the model implicitly
+    called for vs. what actually happened, per coin per hourly check.
+    Newest first. A row with no candle in that window (data gap) still comes
+    back, with actual_price/actual_change_pct/correct all None, rather than
+    being silently dropped."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT ps.symbol, ps.checked_at, ps.price, ps.prob_up, ps.predicted_up, mc.close
+        FROM prediction_snapshots ps
+        LEFT JOIN LATERAL (
+            SELECT close
+            FROM market_candles
+            WHERE market_candles.symbol = ps.symbol
+              AND candle_start BETWEEN ps.checked_at + INTERVAL '55 minutes'
+                                    AND ps.checked_at + INTERVAL '65 minutes'
+            ORDER BY ABS(EXTRACT(EPOCH FROM (candle_start - (ps.checked_at + INTERVAL '1 hour'))))
+            LIMIT 1
+        ) mc ON TRUE
+        WHERE ps.checked_at > NOW() - make_interval(hours => %s)
+          AND ps.checked_at <= NOW() - INTERVAL '55 minutes'
+        ORDER BY ps.checked_at DESC, ps.symbol
+    """, (hours,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    out = []
+    for symbol, checked_at, price, prob_up, predicted_up, actual_price in rows:
+        entry = {
+            "symbol": symbol, "checked_at": checked_at.isoformat(),
+            "predicted_price": price, "prob_up": prob_up, "predicted_up": predicted_up,
+            "actual_price": actual_price, "actual_change_pct": None, "correct": None,
+        }
+        if actual_price is not None:
+            change_pct = (actual_price - price) / price * 100
+            entry["actual_change_pct"] = change_pct
+            entry["correct"] = (change_pct > 0) == predicted_up
+        out.append(entry)
+    return out
 
 
 def get_open_paper_trade(symbol: str):

@@ -22,6 +22,11 @@ config.PREDICT_SYMBOLS coin:
 
 logger.get_todays_paper_trade_stats() is what /predict and the dashboard
 read to show today's win rate and hypothetical P&L.
+
+Every symbol also gets a row in logger.prediction_snapshots on every check,
+whether or not it crossed the buy threshold - see
+logger.get_prediction_vs_actual for how the dashboard turns that into a
+predicted-vs-actual-price-an-hour-later comparison.
 """
 
 from datetime import datetime, timezone
@@ -40,6 +45,7 @@ def check_signals():
           f"(threshold {config.PREDICT_UP_THRESHOLD*100:.0f}%)...")
 
     snapshot = []
+    checked_at = datetime.now(timezone.utc)
 
     for symbol in config.PREDICT_SYMBOLS:
         result = price_predictor.predict_symbol(symbol)
@@ -51,6 +57,7 @@ def check_signals():
         snapshot.append({"symbol": symbol, "prob_up": prob_up})
         open_trade = logger.get_open_paper_trade(symbol)
         signal_up = prob_up >= config.PREDICT_UP_THRESHOLD
+        logger.log_prediction_snapshot(symbol, checked_at, price, prob_up, signal_up)
 
         if open_trade is None:
             if signal_up:
@@ -70,5 +77,5 @@ def check_signals():
             print(f"[prediction-tracker] {symbol}: prob_up {prob_up*100:.1f}%, still holding "
                   f"(entry {open_trade['entry_price']})")
 
-    last_check_snapshot["checked_at"] = datetime.now(timezone.utc)
+    last_check_snapshot["checked_at"] = checked_at
     last_check_snapshot["predictions"] = sorted(snapshot, key=lambda r: r["prob_up"], reverse=True)

@@ -185,7 +185,7 @@
     color: var(--text-dim);
   }
   table.models td:first-child { color: var(--text); }
-  #trades-list {
+  #trades-list, #pred-vs-actual-list {
     margin-top: 12px;
     display: flex;
     flex-direction: column;
@@ -329,6 +329,12 @@
     <h2 id="heading-last-check">Last hourly check &mdash; what the system actually saw</h2>
     <p class="desc">Frozen at the moment prediction_tracking_loop last ran - only changes when the next real hourly check fires, unlike the live chart above. This is what actually decided each buy/sell/hold.</p>
     <div class="chart-wrap"><canvas id="chart-last-check"></canvas></div>
+  </div>
+
+  <div class="card full">
+    <h2>Predicted vs actual price &mdash; after the hour</h2>
+    <p class="desc">Every hourly check's price at prediction time vs. the actual price ~1h later, per coin. &check; = the direction the model called matched what actually happened; &cross; = it didn't. Rows appear once their hour has elapsed.</p>
+    <div id="pred-vs-actual-list"></div>
   </div>
 
   <div class="card full">
@@ -662,6 +668,32 @@ function renderTradesList(trades) {
   listEl.innerHTML = rowsHtml;
 }
 
+function renderPredictionVsActual(rows) {
+  const el = document.getElementById("pred-vs-actual-list");
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">No completed hourly checks in this window yet - a row appears here once ~1h has passed since that check.</div>';
+    return;
+  }
+  const rowsHtml = rows.map(r => {
+    const dirArrow = r.predicted_up ? "&uarr;" : "&darr;";
+    const predText = `${r.symbol}: ${fmtDateTime(r.checked_at)} SAST predicted ${dirArrow} (${(r.prob_up * 100).toFixed(0)}%) @ ${r.predicted_price}`;
+
+    if (r.actual_price === null) {
+      return `<div class="trade-row"><span>${predText} &rarr; actual price pending</span><span class="pnl open">PENDING</span></div>`;
+    }
+
+    const changeUp = r.actual_change_pct >= 0;
+    const priceTag = changeUp
+      ? `<span class="price-tag up">actual ${r.actual_price} (+${r.actual_change_pct.toFixed(2)}%)</span>`
+      : `<span class="price-tag down">actual ${r.actual_price} (${r.actual_change_pct.toFixed(2)}%)</span>`;
+    const resultClass = r.correct ? "status-success" : "status-failed";
+    const resultText = r.correct ? "&check; correct" : "&cross; wrong";
+
+    return `<div class="trade-row"><span>${predText} &rarr; ${priceTag}</span><span class="pnl ${resultClass}">${resultText}</span></div>`;
+  }).join("");
+  el.innerHTML = rowsHtml;
+}
+
 function renderNearMisses(rows) {
   document.getElementById("heading-near-misses").textContent = `Near-miss trend (${RANGE_LABELS[state.hours]})`;
   const wrap = document.getElementById("chart-near-misses").parentElement;
@@ -821,6 +853,7 @@ async function refresh() {
       fetchJSON(`/api/threshold_crossings?hours=4`),
       fetchJSON(`/api/prediction_schedule`),
       fetchJSON(`/api/last_check_snapshot`),
+      fetchJSON(`/api/prediction_vs_actual?hours=${state.hours}`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
@@ -831,12 +864,13 @@ async function refresh() {
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings, predictionSchedule, lastCheckSnapshot] = results;
+    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings, predictionSchedule, lastCheckSnapshot, predictionVsActual] = results;
 
     renderStats(stats);
     renderThresholdCrossings(thresholdCrossings);
     renderNextCheck(predictionSchedule);
     renderLastCheck(lastCheckSnapshot);
+    renderPredictionVsActual(predictionVsActual);
     renderPredictionAccuracy(predictionAccuracy);
     renderSignal(candlesMulti, predictions);
     renderPrice(candles, paperTrades);

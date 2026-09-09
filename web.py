@@ -126,6 +126,14 @@ def api_last_check_snapshot(_auth=Depends(require_auth)):
     }
 
 
+@app.get("/api/prediction_vs_actual")
+def api_prediction_vs_actual(hours: int = 48, _auth=Depends(require_auth)):
+    """Every symbol's price-at-check vs. the actual price ~1h later, for
+    every real hourly check in the window whose hour has elapsed - see
+    logger.get_prediction_vs_actual."""
+    return logger.get_prediction_vs_actual(hours)
+
+
 @app.get("/api/threshold_crossings")
 def api_threshold_crossings(hours: int = 4, _auth=Depends(require_auth)):
     """How many times a coin crossed >= config.PREDICT_UP_THRESHOLD in the
