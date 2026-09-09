@@ -209,17 +209,31 @@ async def prediction_tracking_loop():
     positions on each coin's prediction crossing config.PREDICT_UP_THRESHOLD
     - see prediction_tracker.py. Blocking (pandas/xgboost, Postgres) work is
     pushed to a thread so it never stalls the price stream, same pattern as
-    the Telegram poller."""
+    the Telegram poller.
+
+    Resumes the schedule across a redeploy instead of restarting the full
+    interval from process start every time: looks up when check_signals()
+    last actually ran (logger.get_last_prediction_check_time, backed by the
+    real prediction_snapshots table) and only sleeps whatever's left of
+    that interval - or checks right away if a redeploy sat long enough that
+    it's already overdue."""
     import prediction_tracker
 
+    interval = timedelta(minutes=config.PREDICTION_CHECK_INTERVAL_MINUTES)
+    last_checked_at = await asyncio.to_thread(logger.get_last_prediction_check_time)
+    remaining = (last_checked_at + interval - datetime.now(timezone.utc)) if last_checked_at else interval
+
+    if remaining > timedelta(0):
+        prediction_schedule["next_check_at"] = datetime.now(timezone.utc) + remaining
+        await asyncio.sleep(remaining.total_seconds())
+
     while True:
-        prediction_schedule["next_check_at"] = datetime.now(timezone.utc) + timedelta(
-            minutes=config.PREDICTION_CHECK_INTERVAL_MINUTES)
-        await asyncio.sleep(config.PREDICTION_CHECK_INTERVAL_MINUTES * 60)
         try:
             await asyncio.to_thread(prediction_tracker.check_signals)
         except Exception as e:
             print(f"[prediction-tracker] error: {e}")
+        prediction_schedule["next_check_at"] = datetime.now(timezone.utc) + interval
+        await asyncio.sleep(interval.total_seconds())
 
 
 async def watchdog():

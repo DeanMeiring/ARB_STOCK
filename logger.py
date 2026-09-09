@@ -603,6 +603,23 @@ def get_prediction_vs_actual(hours: int = 48) -> list:
     return out
 
 
+def get_last_prediction_check_time():
+    """Most recent checked_at across every prediction_snapshots row - i.e.
+    when prediction_tracker.check_signals() last actually ran. Used by
+    main.py's prediction_tracking_loop to resume the hourly schedule across
+    a redeploy instead of restarting the full interval from process start
+    every time - prediction_schedule/last_check_snapshot in web.py are
+    deliberately memory-only, but this table is real Postgres, so it
+    survives exactly what those don't."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT MAX(checked_at) FROM prediction_snapshots")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row[0] if row else None
+
+
 def get_open_paper_trade(symbol: str):
     """{'id', 'entry_price'} if symbol currently has an open paper position, else None."""
     conn = _connect()
