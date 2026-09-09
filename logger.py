@@ -524,6 +524,13 @@ def init_prediction_tracking():
         CREATE UNIQUE INDEX IF NOT EXISTS one_open_paper_trade_per_symbol
         ON paper_trades (symbol) WHERE open
     """)
+    # close_reason: 'signal' (normal prob_up-crossed-back-below-threshold
+    # exit), 'stop_loss', or 'take_profit' - see config.STOP_LOSS_PCT /
+    # TAKE_PROFIT_NET_PCT and prediction_tracker.check_signals(). Added
+    # after the table already existed in production, hence ALTER rather
+    # than inline in CREATE TABLE above - same pattern as market_candles'
+    # volume column.
+    cur.execute("ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS close_reason TEXT")
     # prediction_snapshots: what prediction_tracker.py saw for every symbol
     # at every real hourly check, kept even for symbols that didn't cross
     # the buy threshold (paper_trades only records the ones that did) -
@@ -643,14 +650,16 @@ def open_paper_trade(symbol: str, price: float, prob_up: float):
     conn.close()
 
 
-def close_paper_trade(trade_id: int, price: float, prob_up: float, pnl_usdt: float):
+def close_paper_trade(trade_id: int, price: float, prob_up: float, pnl_usdt: float, reason: str = "signal"):
+    """reason: 'signal' (normal exit), 'stop_loss', or 'take_profit' - see
+    config.STOP_LOSS_PCT / TAKE_PROFIT_NET_PCT."""
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
         UPDATE paper_trades
-        SET open = FALSE, exit_at = NOW(), exit_price = %s, exit_prob_up = %s, pnl_usdt = %s
+        SET open = FALSE, exit_at = NOW(), exit_price = %s, exit_prob_up = %s, pnl_usdt = %s, close_reason = %s
         WHERE id = %s
-    """, (price, prob_up, pnl_usdt, trade_id))
+    """, (price, prob_up, pnl_usdt, reason, trade_id))
     conn.commit()
     cur.close()
     conn.close()
@@ -688,7 +697,7 @@ def get_recent_paper_trades(symbol: str, hours: int = 24) -> list:
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
-        SELECT entry_at, entry_price, entry_prob_up, open, exit_at, exit_price, pnl_usdt
+        SELECT entry_at, entry_price, entry_prob_up, open, exit_at, exit_price, pnl_usdt, close_reason
         FROM paper_trades
         WHERE symbol = %s AND entry_at > NOW() - make_interval(hours => %s)
         ORDER BY entry_at ASC
@@ -701,9 +710,9 @@ def get_recent_paper_trades(symbol: str, hours: int = 24) -> list:
             "entry_at": entry_at.isoformat(), "entry_price": entry_price, "entry_prob_up": entry_prob_up,
             "open": is_open,
             "exit_at": exit_at.isoformat() if exit_at else None,
-            "exit_price": exit_price, "pnl_usdt": pnl_usdt,
+            "exit_price": exit_price, "pnl_usdt": pnl_usdt, "close_reason": close_reason,
         }
-        for entry_at, entry_price, entry_prob_up, is_open, exit_at, exit_price, pnl_usdt in rows
+        for entry_at, entry_price, entry_prob_up, is_open, exit_at, exit_price, pnl_usdt, close_reason in rows
     ]
 
 

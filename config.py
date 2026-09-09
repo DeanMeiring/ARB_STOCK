@@ -155,6 +155,23 @@ PREDICT_UP_THRESHOLD = 0.65
 # actually the fix.
 PREDICTION_CHECK_INTERVAL_MINUTES = 60
 
+# Circuit breakers checked on every open paper trade at each hourly check,
+# BEFORE the normal signal-based sell logic - independent of prob_up, since
+# these exist purely to cap the downside/lock in the upside of a single
+# position regardless of what the model currently thinks. Both only run on
+# PREDICTION_CHECK_INTERVAL_MINUTES's cadence (same as everything else in
+# prediction_tracker.py), so this is a per-hourly-check circuit breaker, not
+# a true sub-hour one - a real "never let it drop 50% within the hour"
+# guarantee would need faster polling than this architecture does today.
+#
+# Stop-loss: force-sell if the raw price has dropped this fraction or more
+# from entry (fees make an even bigger dent on top of this).
+STOP_LOSS_PCT = 0.50
+# Take-profit: force-sell once NET gain (raw price move minus the round-trip
+# taker fee, same math as pnl_usdt below) reaches this fraction of
+# TRADE_SIZE_USDT - "100% including fees", not just a 100% raw price move.
+TAKE_PROFIT_NET_PCT = 1.00
+
 # --- Web dashboard ---
 # Railway injects PORT automatically once a public domain is generated for
 # this service; falls back to 8080 for local runs.

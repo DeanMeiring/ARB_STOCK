@@ -683,8 +683,10 @@ function renderTradesList(trades) {
       : `<span class="price-tag down">price &darr; ${priceMovePct.toFixed(2)}%</span>`;
     const feesNote = (priceUp && t.pnl_usdt < 0)
       ? `<span class="fees-note">price was up - fees ate the gain</span>` : "";
+    const reasonTag = t.close_reason === "stop_loss" ? `<span class="price-tag down">STOP-LOSS</span>`
+      : t.close_reason === "take_profit" ? `<span class="price-tag up">TAKE-PROFIT</span>` : "";
 
-    return `<div class="trade-row"><span>▲ ${entry} &rarr; ▼ ${exit} ${priceTag}${feesNote}</span><span class="pnl ${pnlClass}">${pnlText}</span></div>`;
+    return `<div class="trade-row"><span>▲ ${entry} &rarr; ▼ ${exit} ${priceTag}${reasonTag}${feesNote}</span><span class="pnl ${pnlClass}">${pnlText}</span></div>`;
   }).join("");
   listEl.innerHTML = rowsHtml;
 }
