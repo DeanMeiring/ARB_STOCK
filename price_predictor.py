@@ -28,6 +28,16 @@ def predict_symbol(symbol: str):
     blob, metadata, trained_at = saved
     model = pickle.loads(blob)
 
+    # A saved model is trained on whatever FEATURE_COLS was at the time -
+    # if that's changed since (e.g. this deploy added volume_ratio/
+    # btc_return_5) and this symbol hasn't been retrained yet, XGBoost
+    # raises rather than degrading, so catch the mismatch explicitly
+    # instead of letting predict_proba below blow up every single call
+    # until the next training run catches up.
+    trained_features = model.get_booster().feature_names
+    if trained_features is not None and list(trained_features) != FEATURE_COLS:
+        return f"{symbol}: model needs retraining (feature set changed) - waiting on next training run"
+
     conn = psycopg2.connect(config.DATABASE_URL)
     df = pd.read_sql(
         "SELECT candle_start, close, volume FROM market_candles WHERE symbol = %(symbol)s "
