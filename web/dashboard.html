@@ -264,6 +264,11 @@
     <div class="sub" id="tile-crossings-sub"></div>
   </div>
   <div class="tile">
+    <div class="label">Next paper-trade check</div>
+    <div class="value" id="tile-next-check">--</div>
+    <div class="sub" id="tile-next-check-sub">buys/sells whichever coins cross 65% right then</div>
+  </div>
+  <div class="tile">
     <div class="label">Gross win rate (lifetime, before fees)</div>
     <div class="value" id="tile-gross-winrate">--</div>
     <div class="sub" id="tile-gross-winrate-sub">price direction only, ignores fees</div>
@@ -390,6 +395,20 @@ function renderStats(stats) {
     trainingEl.textContent = "never run";
     trainingSubEl.textContent = "";
   }
+}
+
+function renderNextCheck(data) {
+  const el = document.getElementById("tile-next-check");
+  const subEl = document.getElementById("tile-next-check-sub");
+  if (!data.next_check_at) {
+    el.textContent = "--";
+    subEl.textContent = "not scheduled yet - service just started";
+    return;
+  }
+  const nextAt = new Date(data.next_check_at);
+  el.textContent = fmtTime(data.next_check_at) + " SAST";
+  const minsLeft = Math.round((nextAt.getTime() - Date.now()) / 60000);
+  subEl.textContent = minsLeft > 0 ? `in ~${minsLeft} min` : "any moment now";
 }
 
 function renderThresholdCrossings(data) {
@@ -750,6 +769,7 @@ async function refresh() {
       fetchJSON(`/api/prediction_accuracy`),
       fetchJSON(`/api/paper_trades?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}`),
       fetchJSON(`/api/threshold_crossings?hours=4`),
+      fetchJSON(`/api/prediction_schedule`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
@@ -760,10 +780,11 @@ async function refresh() {
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings] = results;
+    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings, predictionSchedule] = results;
 
     renderStats(stats);
     renderThresholdCrossings(thresholdCrossings);
+    renderNextCheck(predictionSchedule);
     renderPredictionAccuracy(predictionAccuracy);
     renderSignal(candlesMulti, predictions);
     renderPrice(candles, paperTrades);

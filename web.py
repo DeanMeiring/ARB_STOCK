@@ -26,6 +26,13 @@ import logger
 app = FastAPI(title="ARB_STOCK Dashboard")
 security = HTTPBasic(auto_error=False)
 
+# Set by main.py's prediction_tracking_loop at the start of each sleep cycle -
+# in-process shared state, not Postgres, since it's purely "when will this
+# same running process next wake up and check" and has no meaning beyond
+# that process's own lifetime (a redeploy resets it, same as the check
+# timer itself does).
+prediction_schedule = {"next_check_at": None}
+
 _DASHBOARD_HTML = (pathlib.Path(__file__).parent / "web" / "dashboard.html").read_text()
 
 
@@ -91,6 +98,14 @@ def api_config(_auth=Depends(require_auth)):
         "predict_up_threshold_pct": config.PREDICT_UP_THRESHOLD * 100,
         "predict_symbols": config.PREDICT_SYMBOLS,
     }
+
+
+@app.get("/api/prediction_schedule")
+def api_prediction_schedule(_auth=Depends(require_auth)):
+    """When prediction_tracking_loop will next wake up and check every
+    coin's signal - see the prediction_schedule module-level dict above."""
+    next_at = prediction_schedule["next_check_at"]
+    return {"next_check_at": next_at.isoformat() if next_at else None}
 
 
 @app.get("/api/threshold_crossings")

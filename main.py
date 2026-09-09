@@ -21,7 +21,7 @@ Run:
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import uvicorn
 import config
 import logger
@@ -29,7 +29,7 @@ from binance_client import BinanceBookTickerStream, BinanceKlineVolumeStream
 from arb_calculator import check_both_directions, check_cross_exchange
 import cryptocom_client
 from telegram_bot import TelegramNotifier
-from web import app as dashboard_app
+from web import app as dashboard_app, prediction_schedule
 
 if config.EXECUTE_TRADES:
     import executor
@@ -213,6 +213,8 @@ async def prediction_tracking_loop():
     import prediction_tracker
 
     while True:
+        prediction_schedule["next_check_at"] = datetime.now(timezone.utc) + timedelta(
+            minutes=config.PREDICTION_CHECK_INTERVAL_MINUTES)
         await asyncio.sleep(config.PREDICTION_CHECK_INTERVAL_MINUTES * 60)
         try:
             await asyncio.to_thread(prediction_tracker.check_signals)
