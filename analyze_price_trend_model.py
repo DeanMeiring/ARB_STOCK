@@ -27,6 +27,16 @@ actually asks for a prediction.
 
 Standalone - called from analyze_opportunity_model.py's main() as part of
 the same daily cron run, not scheduled separately.
+
+Hyperparameters (max_depth/n_estimators/learning_rate) are tuned per
+symbol per run via GridSearchCV over PARAM_GRID, scored with TimeSeriesSplit
+- walk-forward CV, not a random k-fold shuffle, since a random shuffle would
+let a fold "train" on rows chronologically after what it's "testing" on
+(the same leakage concern that keeps the final train/test split below
+unshuffled). Measured at ~6.6s/symbol at full 90-day/~90k-row scale, so
+~1 minute added across all of config.PREDICT_SYMBOLS - nowhere near the
+57-minute unbounded-backfill hang from 2026-09-09 (a different, since-fixed
+issue in ensure_backfilled below).
 """
 
 from datetime import datetime, timedelta, timezone
@@ -34,7 +44,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import psycopg2
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, TimeSeriesSplit, GridSearchCV
 from sklearn.metrics import roc_auc_score, accuracy_score
 import xgboost as xgb
 import config
@@ -42,6 +52,17 @@ import logger
 from backfill_candles import fetch_binance_klines, BACKFILL_DAYS
 
 MIN_ROWS = 500
+# Hyperparameter search grid for train_symbol()'s GridSearchCV - kept
+# deliberately small (3 x 2 x 2 = 12 combos x 3 CV folds = 36 fits per
+# symbol, ~252 total across config.PREDICT_SYMBOLS) so the daily cron run
+# stays bounded - see ensure_backfilled's docstring for what an unbounded
+# per-run cost already did once (a 57-minute hang). Widen only after
+# confirming real runtime stays reasonable.
+PARAM_GRID = {
+    "max_depth": [3, 4, 5],
+    "n_estimators": [100, 200],
+    "learning_rate": [0.05, 0.1],
+}
 # How many 1-minute candles ahead the target looks - see module docstring.
 # Keep in sync with config.PREDICTION_CHECK_INTERVAL_MINUTES (60): the
 # probability price_predictor reports should describe the same span of time
@@ -178,10 +199,29 @@ def train_symbol(symbol: str) -> str:
 
     df = build_features(df, load_btc_lag_series())
     X, y = df[FEATURE_COLS], df["target"]
+    # Final honest test slice - never touched by the hyperparameter search
+    # below, same chronological (not shuffled) split as before. This is
+    # what the reported AUC/accuracy is scored against.
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-    model = xgb.XGBClassifier(n_estimators=150, max_depth=4, eval_metric="logloss")
-    model.fit(X_train, y_train)
+    # Hyperparameter search over PARAM_GRID, scored by walk-forward CV
+    # (TimeSeriesSplit) rather than plain k-fold - a random k-fold shuffle
+    # would let a fold "train" on rows chronologically after what it's
+    # "testing" on, the exact leakage shuffle=False above already guards
+    # against, just generalized to multiple folds. Each fold's test slice
+    # is strictly later in time than its train slice. GridSearchCV refits
+    # one final model on the full X_train/y_train using whichever
+    # combination scored best across folds (roc_auc, matching how we
+    # report performance below).
+    search = GridSearchCV(
+        xgb.XGBClassifier(eval_metric="logloss"),
+        PARAM_GRID,
+        cv=TimeSeriesSplit(n_splits=3),
+        scoring="roc_auc",
+        refit=True,
+    )
+    search.fit(X_train, y_train)
+    model = search.best_estimator_
 
     y_prob = model.predict_proba(X_test)[:, 1]
     y_pred = model.predict(X_test)
@@ -204,14 +244,20 @@ def train_symbol(symbol: str) -> str:
     except ValueError:
         auc, auc_str = None, "n/a (test set has no positive examples)"
 
+    # search.best_score_ is a numpy float64 - json.dumps (used by
+    # logger.save_model's Json() wrapper) can't serialize that, same class
+    # of bug as the NaN-vs-None issue elsewhere in this file. Cast to plain
+    # Python float before it ever reaches Postgres.
     blob = pickle.dumps(model)
     logger.save_model(model_name(symbol), blob, {
         "auc": auc, "accuracy": accuracy, "rows": len(df), "features": FEATURE_COLS,
+        "best_params": search.best_params_, "cv_auc": round(float(search.best_score_), 3),
     })
 
     up_rate = df["target"].mean()
     return (f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% were higher an hour later historically, "
-            f"test AUC {auc_str}, accuracy {accuracy*100:.1f}%")
+            f"test AUC {auc_str}, accuracy {accuracy*100:.1f}%, "
+            f"best params {search.best_params_} (CV AUC {search.best_score_:.3f})")
 
 
 def train() -> str:
