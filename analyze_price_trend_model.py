@@ -29,14 +29,51 @@ Standalone - called from analyze_opportunity_model.py's main() as part of
 the same daily cron run, not scheduled separately.
 
 Hyperparameters (max_depth/n_estimators/learning_rate) are tuned per
-symbol per run via GridSearchCV over PARAM_GRID, scored with TimeSeriesSplit
-- walk-forward CV, not a random k-fold shuffle, since a random shuffle would
-let a fold "train" on rows chronologically after what it's "testing" on
-(the same leakage concern that keeps the final train/test split below
-unshuffled). Measured at ~6.6s/symbol at full 90-day/~90k-row scale, so
-~1 minute added across all of config.PREDICT_SYMBOLS - nowhere near the
-57-minute unbounded-backfill hang from 2026-09-09 (a different, since-fixed
-issue in ensure_backfilled below).
+symbol per run via GridSearchCV over PARAM_GRID, scored with
+PurgedTimeSeriesSplit - walk-forward CV, not a random k-fold shuffle, since
+a random shuffle would let a fold "train" on rows chronologically after
+what it's "testing" on (the same leakage concern that keeps the final
+train/test split below unshuffled). Measured at ~6.6s/symbol at full
+90-day/~90k-row scale, so ~1 minute added across all of
+config.PREDICT_SYMBOLS - nowhere near the 57-minute unbounded-backfill hang
+from 2026-09-09 (a different, since-fixed issue in ensure_backfilled below).
+
+--- Purging and honest uncertainty (2026-09-11) ---
+
+Two related problems, found by actually checking the numbers this pipeline
+had been reporting: every symbol's test AUC was sitting at ~0.48-0.54,
+indistinguishable from a coin flip, and CV AUC was sometimes *below* 0.5.
+
+1. Leakage at every train/test boundary. A row's label looks
+   HORIZON_CANDLES (60) minutes into the future. The last 60 rows of any
+   chronological "train" slice therefore have labels computed from prices
+   that fall inside the following "test" slice - a real leak, not just a
+   statistics problem. PurgedTimeSeriesSplit below wraps sklearn's
+   TimeSeriesSplit and additionally drops the last `purge` rows of each
+   fold's train indices; train_symbol() does the equivalent by hand at the
+   outer train/test split.
+
+2. The bigger problem: even leak-free, adjacent rows' labels overlap in
+   59 of their 60 minutes (row t and row t+1 are both asking "is price up
+   ~60min from now", almost the same question). They are not independent
+   samples, so the usual AUC standard error formula
+   (SE ~ sqrt((n+ + n- + 1) / (12 n+ n-)), which assumes i.i.d. test
+   points) drastically understates the true uncertainty - by roughly
+   sqrt(HORIZON_CANDLES) ~= 7.75x once you account for the ~60-row
+   autocorrelation. A reported "AUC 0.53" was well within noise of 0.50;
+   none of the 7 coins had shown a statistically real edge.
+
+   Fixed by computing a moving-block bootstrap CI (block_bootstrap_auc_ci
+   below): resample the test set in contiguous blocks of HORIZON_CANDLES
+   rows (not individual rows) with replacement, recompute AUC per
+   resample, take the 2.5th/97.5th percentiles. This correctly reflects
+   the test set's real (much smaller) effective sample size without
+   throwing away any data for the point estimate itself - AUC is still
+   computed on the full test set, just with an honest error bar around it.
+
+Every trained model's metadata now carries auc_ci_low/auc_ci_high, and the
+training summary/predict text only ever calls a coin's edge "real" once
+its whole CI clears 0.5.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -44,7 +81,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import psycopg2
-from sklearn.model_selection import train_test_split, TimeSeriesSplit, GridSearchCV
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.metrics import roc_auc_score, accuracy_score
 import xgboost as xgb
 import config
@@ -52,6 +89,12 @@ import logger
 from backfill_candles import fetch_binance_klines, BACKFILL_DAYS
 
 MIN_ROWS = 500
+# Number of moving-block bootstrap resamples for the AUC confidence
+# interval - see block_bootstrap_auc_ci. 500 gives stable 2.5th/97.5th
+# percentiles without materially adding to the per-symbol training budget
+# (each resample is just a roc_auc_score call on ~13.5k already-computed
+# values, not a refit).
+BOOTSTRAP_ITERATIONS = 500
 # Hyperparameter search grid for train_symbol()'s GridSearchCV - kept
 # deliberately small (3 x 2 x 2 = 12 combos x 3 CV folds = 36 fits per
 # symbol, ~252 total across config.PREDICT_SYMBOLS) so the daily cron run
@@ -88,6 +131,61 @@ FEATURE_COLS = ["return_1", "return_5", "return_15", "volatility_15", "hour_sin"
 
 def model_name(symbol: str) -> str:
     return f"price_trend_{symbol.lower()}"
+
+
+class PurgedTimeSeriesSplit:
+    """Same expanding-window folds as sklearn's TimeSeriesSplit, but drops
+    the last `purge` rows of each fold's train indices - those rows' labels
+    look `purge` steps into the future and would otherwise peek into that
+    fold's own test period. See module docstring for why this matters with
+    HORIZON_CANDLES-ahead labels. Duck-types sklearn's CV splitter
+    interface (get_n_splits/split) so GridSearchCV accepts it as `cv=`."""
+
+    def __init__(self, n_splits: int = 3, purge: int = 0):
+        self.n_splits = n_splits
+        self.purge = purge
+        self._base = TimeSeriesSplit(n_splits=n_splits)
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return self.n_splits
+
+    def split(self, X, y=None, groups=None):
+        for train_idx, test_idx in self._base.split(X):
+            if self.purge > 0:
+                train_idx = train_idx[:-self.purge] if len(train_idx) > self.purge else train_idx[:0]
+            yield train_idx, test_idx
+
+
+def block_bootstrap_auc_ci(y_test, y_prob, block_size: int, n_iterations: int = BOOTSTRAP_ITERATIONS,
+                            ci: float = 0.95, seed: int = 42):
+    """95% CI for AUC via moving-block bootstrap, honest about the
+    ~block_size-row autocorrelation HORIZON_CANDLES-ahead labels create
+    (see module docstring) - resamples contiguous blocks of `block_size`
+    rows with replacement instead of individual rows, recomputing AUC each
+    time. Cheap: pure resampling of already-computed y_test/y_prob pairs,
+    no retraining. Returns (ci_low, ci_high), or (None, None) if too many
+    resamples came back degenerate (all-one-class) to trust the result -
+    can happen on a small/imbalanced test set.
+    """
+    y_test = np.asarray(y_test)
+    y_prob = np.asarray(y_prob)
+    n = len(y_test)
+    n_blocks = int(np.ceil(n / block_size))
+    rng = np.random.default_rng(seed)
+
+    aucs = []
+    for _ in range(n_iterations):
+        starts = rng.integers(0, max(1, n - block_size + 1), size=n_blocks)
+        idx = np.concatenate([np.arange(s, min(s + block_size, n)) for s in starts])[:n]
+        y_s, p_s = y_test[idx], y_prob[idx]
+        if len(np.unique(y_s)) < 2:
+            continue  # degenerate resample (one class only) - skip rather than let roc_auc_score raise
+        aucs.append(roc_auc_score(y_s, p_s))
+
+    if len(aucs) < n_iterations * 0.5:
+        return None, None
+    lo, hi = np.percentile(aucs, [(1 - ci) / 2 * 100, (1 + ci) / 2 * 100])
+    return float(lo), float(hi)
 
 
 def load_candles(symbol: str) -> pd.DataFrame:
@@ -199,24 +297,30 @@ def train_symbol(symbol: str) -> str:
 
     df = build_features(df, load_btc_lag_series())
     X, y = df[FEATURE_COLS], df["target"]
-    # Final honest test slice - never touched by the hyperparameter search
-    # below, same chronological (not shuffled) split as before. This is
-    # what the reported AUC/accuracy is scored against.
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+    # Chronological 80/20 split, purged at the boundary: the last
+    # HORIZON_CANDLES rows before the test period start have labels that
+    # look HORIZON_CANDLES minutes into the future - i.e. into the test
+    # period itself (see module docstring's "purging" section) - so they're
+    # dropped entirely rather than assigned to either side.
+    n = len(df)
+    test_start = n - int(n * 0.2)
+    train_end = max(0, test_start - HORIZON_CANDLES)
+    X_train, y_train = X.iloc[:train_end], y.iloc[:train_end]
+    X_test, y_test = X.iloc[test_start:], y.iloc[test_start:]
 
     # Hyperparameter search over PARAM_GRID, scored by walk-forward CV
-    # (TimeSeriesSplit) rather than plain k-fold - a random k-fold shuffle
-    # would let a fold "train" on rows chronologically after what it's
-    # "testing" on, the exact leakage shuffle=False above already guards
-    # against, just generalized to multiple folds. Each fold's test slice
-    # is strictly later in time than its train slice. GridSearchCV refits
-    # one final model on the full X_train/y_train using whichever
-    # combination scored best across folds (roc_auc, matching how we
-    # report performance below).
+    # (PurgedTimeSeriesSplit) rather than plain k-fold - a random k-fold
+    # shuffle would let a fold "train" on rows chronologically after what
+    # it's "testing" on, the exact leakage the purged split above already
+    # guards against, just generalized to multiple internal fold
+    # boundaries too. GridSearchCV refits one final model on the full
+    # X_train/y_train using whichever combination scored best across folds
+    # (roc_auc, matching how we report performance below).
     search = GridSearchCV(
         xgb.XGBClassifier(eval_metric="logloss"),
         PARAM_GRID,
-        cv=TimeSeriesSplit(n_splits=3),
+        cv=PurgedTimeSeriesSplit(n_splits=3, purge=HORIZON_CANDLES),
         scoring="roc_auc",
         refit=True,
     )
@@ -244,19 +348,36 @@ def train_symbol(symbol: str) -> str:
     except ValueError:
         auc, auc_str = None, "n/a (test set has no positive examples)"
 
+    # Point estimate above uses the full test set (best precision); the CI
+    # accounts for the ~HORIZON_CANDLES-row autocorrelation a plain i.i.d.
+    # standard-error formula would miss entirely - see module docstring and
+    # block_bootstrap_auc_ci. A coin only counts as having a demonstrated
+    # edge once the WHOLE interval clears 0.5, not just the point estimate.
+    ci_low = ci_high = None
+    significant = False
+    ci_str = ""
+    if auc is not None:
+        ci_low, ci_high = block_bootstrap_auc_ci(y_test, y_prob, block_size=HORIZON_CANDLES)
+        if ci_low is not None:
+            significant = ci_low > 0.5
+            ci_str = f" [{ci_low:.2f}, {ci_high:.2f}]" + ("" if significant else " (not distinguishable from chance)")
+        else:
+            ci_str = " (CI unavailable - too many degenerate resamples)"
+
     # search.best_score_ is a numpy float64 - json.dumps (used by
     # logger.save_model's Json() wrapper) can't serialize that, same class
     # of bug as the NaN-vs-None issue elsewhere in this file. Cast to plain
     # Python float before it ever reaches Postgres.
     blob = pickle.dumps(model)
     logger.save_model(model_name(symbol), blob, {
-        "auc": auc, "accuracy": accuracy, "rows": len(df), "features": FEATURE_COLS,
+        "auc": auc, "auc_ci_low": ci_low, "auc_ci_high": ci_high, "auc_significant": significant,
+        "accuracy": accuracy, "rows": len(df), "features": FEATURE_COLS,
         "best_params": search.best_params_, "cv_auc": round(float(search.best_score_), 3),
     })
 
     up_rate = df["target"].mean()
     return (f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% were higher an hour later historically, "
-            f"test AUC {auc_str}, accuracy {accuracy*100:.1f}%, "
+            f"test AUC {auc_str}{ci_str}, accuracy {accuracy*100:.1f}%, "
             f"best params {search.best_params_} (CV AUC {search.best_score_:.3f})")
 
 

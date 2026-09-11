@@ -90,6 +90,8 @@ def predict_symbol(symbol: str):
     return {
         "symbol": symbol, "prob_up": prob_up, "trained_at": trained_at,
         "auc": metadata.get("auc"), "accuracy": metadata.get("accuracy"),
+        "auc_ci_low": metadata.get("auc_ci_low"), "auc_ci_high": metadata.get("auc_ci_high"),
+        "auc_significant": metadata.get("auc_significant", False),
         "price": float(df.iloc[-1]["close"]),
     }
 
@@ -115,8 +117,16 @@ def predict_all_text() -> str:
     lines = ["🔮 Price-trend predictions (next hour, probability of going up):"]
     for r in ok:
         marker = " ⬆️" if r["prob_up"] >= config.PREDICT_UP_THRESHOLD else ""
-        accuracy_str = f", model accuracy {r['accuracy']*100:.0f}%" if r.get("accuracy") is not None else ""
-        lines.append(f"  {r['symbol']}: {r['prob_up']*100:.0f}%{marker}{accuracy_str}")
+        accuracy_str = f", accuracy {r['accuracy']*100:.0f}%" if r.get("accuracy") is not None else ""
+        # A coin only gets called out as having a real edge once its whole
+        # bootstrap CI clears 0.5 - see analyze_price_trend_model's module
+        # docstring on why the bare AUC point estimate isn't trustworthy on
+        # its own (~60-row autocorrelation from the 1h-ahead label).
+        if r.get("auc_significant"):
+            edge_str = f", real edge: AUC {r['auc']:.2f} [{r['auc_ci_low']:.2f}, {r['auc_ci_high']:.2f}]"
+        else:
+            edge_str = " (no proven edge yet)"
+        lines.append(f"  {r['symbol']}: {r['prob_up']*100:.0f}%{marker}{accuracy_str}{edge_str}")
 
     hits = [r for r in ok if r["prob_up"] >= config.PREDICT_UP_THRESHOLD]
     if hits:
