@@ -327,6 +327,18 @@ def train_symbol(symbol: str) -> str:
     search.fit(X_train, y_train)
     model = search.best_estimator_
 
+    # Per-fold AUC for the winning params - GridSearchCV already computes
+    # this internally (cv_results_) to pick best_params_, but only the mean
+    # (best_score_) got kept before. Individually, these are 3 chronological
+    # chunks of the training window (earliest -> latest), so a wide spread
+    # between them is a direct sign of regime drift - the market behaving
+    # differently early vs late in the window - rather than one stable
+    # pattern the mean quietly averages over. float(): same numpy-float64
+    # JSON-serialization issue as best_score_ below.
+    fold_aucs = [float(search.cv_results_[f"split{i}_test_score"][search.best_index_])
+                 for i in range(search.n_splits_)]
+    fold_spread = max(fold_aucs) - min(fold_aucs)
+
     y_prob = model.predict_proba(X_test)[:, 1]
     y_pred = model.predict(X_test)
     # accuracy is % of test-set predictions correct at the model's default
@@ -376,12 +388,15 @@ def train_symbol(symbol: str) -> str:
         "auc": auc, "auc_ci_low": ci_low, "auc_ci_high": ci_high, "auc_significant": significant,
         "accuracy": accuracy, "rows": len(df), "features": FEATURE_COLS,
         "best_params": search.best_params_, "cv_auc": round(float(search.best_score_), 3),
+        "cv_fold_aucs": [round(a, 3) for a in fold_aucs], "cv_fold_spread": round(fold_spread, 3),
     })
 
     up_rate = df["target"].mean()
+    folds_str = ", ".join(f"{a:.3f}" for a in fold_aucs)
     return (f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% were higher an hour later historically, "
             f"test AUC {auc_str}{ci_str}, accuracy {accuracy*100:.1f}%, "
-            f"best params {search.best_params_} (CV AUC {search.best_score_:.3f})")
+            f"best params {search.best_params_} "
+            f"(CV AUC {search.best_score_:.3f}, folds [{folds_str}] spread {fold_spread:.3f})")
 
 
 def train() -> str:
