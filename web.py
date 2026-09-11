@@ -80,6 +80,16 @@ def api_near_misses(hours: int = 24, source: str = None, _auth=Depends(require_a
     return logger.get_recent_near_misses(hours, source)
 
 
+@app.get("/api/arb_pnl")
+def api_arb_pnl(_auth=Depends(require_auth)):
+    """Hypothetical $ P&L per arbitrage detector - see get_arb_pnl_stats'
+    docstring for the idealized-execution caveat."""
+    return {
+        "triangular": logger.get_arb_pnl_stats("triangular"),
+        "cross_exchange": logger.get_arb_pnl_stats("cross_exchange"),
+    }
+
+
 @app.get("/api/candles")
 def api_candles(symbol: str = "BTCUSDT", hours: int = 24, _auth=Depends(require_auth)):
     return logger.get_recent_candles(symbol, hours)

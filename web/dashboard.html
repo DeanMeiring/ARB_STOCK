@@ -348,6 +348,33 @@
     <p class="desc">Triangular (Binance) and cross-exchange (Binance vs Crypto.com), every logged event. Click a legend entry to toggle it.</p>
     <div class="chart-wrap"><canvas id="chart-opportunities"></canvas></div>
   </div>
+
+  <div class="card full">
+    <h2>Arbitrage &mdash; hypothetical P&amp;L</h2>
+    <p class="desc">What every logged, threshold-clearing opportunity would have made if filled instantly and in full at the exact bid/ask it was detected at. An idealized upper bound, not a guarantee - real execution has slippage and latency risk (the book can move, or someone faster eats it, before an order actually lands).</p>
+    <div class="tiles" id="arb-pnl-tiles">
+      <div class="tile">
+        <div class="label">Triangular &mdash; lifetime</div>
+        <div class="value" id="tile-arb-tri-lifetime">--</div>
+        <div class="sub" id="tile-arb-tri-lifetime-sub"></div>
+      </div>
+      <div class="tile">
+        <div class="label">Triangular &mdash; last 24h</div>
+        <div class="value" id="tile-arb-tri-24h">--</div>
+        <div class="sub" id="tile-arb-tri-24h-sub"></div>
+      </div>
+      <div class="tile">
+        <div class="label">Cross-exchange &mdash; lifetime</div>
+        <div class="value" id="tile-arb-cx-lifetime">--</div>
+        <div class="sub" id="tile-arb-cx-lifetime-sub"></div>
+      </div>
+      <div class="tile">
+        <div class="label">Cross-exchange &mdash; last 24h</div>
+        <div class="value" id="tile-arb-cx-24h">--</div>
+        <div class="sub" id="tile-arb-cx-24h-sub"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <footer>Auto-refreshes every 30s (toggle above) &middot; times in SAST (UTC+2)</footer>
@@ -452,6 +479,26 @@ function renderThresholdCrossings(data) {
   const bySymbol = data.by_symbol || {};
   const parts = Object.entries(bySymbol).map(([s, c]) => `${s}: ${c}`);
   document.getElementById("tile-crossings-sub").textContent = parts.length ? parts.join(", ") : "none in this window";
+}
+
+function renderArbPnl(data) {
+  const fill = (prefix, count, pnl) => {
+    const el = document.getElementById(`tile-arb-${prefix}`);
+    const subEl = document.getElementById(`tile-arb-${prefix}-sub`);
+    el.classList.remove("status-success");
+    if (!count) {
+      el.textContent = "$0.00";
+      subEl.textContent = "none logged yet";
+      return;
+    }
+    el.textContent = `+$${pnl.toFixed(2)}`;
+    el.classList.add("status-success");
+    subEl.textContent = `${count} opportunities`;
+  };
+  fill("tri-lifetime", data.triangular.count, data.triangular.total_pnl_usdt);
+  fill("tri-24h", data.triangular.last_24h_count, data.triangular.last_24h_pnl_usdt);
+  fill("cx-lifetime", data.cross_exchange.count, data.cross_exchange.total_pnl_usdt);
+  fill("cx-24h", data.cross_exchange.last_24h_count, data.cross_exchange.last_24h_pnl_usdt);
 }
 
 function renderPredictionAccuracy(stats) {
@@ -874,6 +921,7 @@ async function refresh() {
       fetchJSON(`/api/prediction_schedule`),
       fetchJSON(`/api/last_check_snapshot`),
       fetchJSON(`/api/prediction_vs_actual?hours=${state.hours}`),
+      fetchJSON(`/api/arb_pnl`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
@@ -884,9 +932,10 @@ async function refresh() {
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings, predictionSchedule, lastCheckSnapshot, predictionVsActual] = results;
+    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings, predictionSchedule, lastCheckSnapshot, predictionVsActual, arbPnl] = results;
 
     renderStats(stats);
+    renderArbPnl(arbPnl);
     renderThresholdCrossings(thresholdCrossings);
     renderNextCheck(predictionSchedule);
     renderLastCheck(lastCheckSnapshot);

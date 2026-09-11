@@ -142,8 +142,14 @@ async def on_price_update(latest: dict):
     for result in (fwd, rev):
         if result.is_opportunity:
             stats["opportunities"] += 1
+            # Logged (and paper-"traded" in the sense that this IS the
+            # hypothetical trade - see get_arb_pnl_stats/the dashboard's
+            # Arbitrage P&L card for cumulative $ instead of a push alert
+            # per crossing). No live notify_opportunity() here anymore -
+            # a real crossing can re-trigger on every tick while conditions
+            # hold, which turned into a Telegram spam burst rather than a
+            # useful alert (see 2026-09-11 session notes).
             logger.log_opportunity(result, "triangular", btcusdt=btcusdt, ethbtc=ethbtc, ethusdt=ethusdt)
-            await notifier.notify_opportunity(result)
             print(
                 f"[OPPORTUNITY] {result.direction} | "
                 f"profit: {result.profit_pct*100:.4f}% "
@@ -186,8 +192,9 @@ async def cross_exchange_watch():
             for result in check_cross_exchange(binance_ticker, cryptocom_ticker):
                 if result.is_opportunity:
                     stats["cross_exchange_opportunities"] += 1
+                    # See the triangular path above - logged/counted, no
+                    # per-crossing Telegram push anymore.
                     logger.log_opportunity(result, "cross_exchange", btcusdt=binance_ticker, cryptocom=cryptocom_ticker)
-                    await notifier.notify_opportunity(result)
                     print(
                         f"[CROSS-EXCHANGE OPPORTUNITY] {result.direction} | "
                         f"profit: {result.profit_pct*100:.4f}% (${result.profit_usdt:.2f} on ${result.start_usdt:.0f}) "

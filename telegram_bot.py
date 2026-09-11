@@ -35,7 +35,12 @@ def _format_report_section(logger_module, source: str) -> list:
     """Build the lines for one detector's slice of /report - shared between
     triangular and cross_exchange so the format can't drift between them."""
     stats = logger_module.get_report_stats(source)
+    pnl = logger_module.get_arb_pnl_stats(source)
     lines = [f"Opportunities: {stats['total']} total, {stats['last_24h']} in the last 24h"]
+    lines.append(
+        f"Hypothetical P&L: +${pnl['total_pnl_usdt']:.2f} lifetime, "
+        f"+${pnl['last_24h_pnl_usdt']:.2f} last 24h (idealized - see dashboard for caveats)"
+    )
 
     if stats["latest"]:
         direction, profit_pct, profit_usdt, ts = stats["latest"]
@@ -309,17 +314,14 @@ class TelegramNotifier:
         except Exception as e:
             print(f"[telegram] send error: {self._redact(str(e))}")
 
-    async def notify_opportunity(self, result):
-        text = (
-            f"[OPPORTUNITY] {result.direction}\n"
-            f"profit: {result.profit_pct * 100:.4f}% "
-            f"(${result.profit_usdt:.2f} on ${result.start_usdt:.0f})"
-        )
-        await self.send_alert(text)
-
     async def send_alert(self, text: str):
-        """Send text to every logged-in chat - used for opportunities, the
-        stale-connection watchdog, and the daily heartbeat alike."""
+        """Send text to every logged-in chat - used for the stale-connection
+        watchdog and the daily heartbeat. Arbitrage opportunities used to
+        push an alert here too (notify_opportunity, removed) - a real
+        crossing can re-trigger on every tick while conditions hold, which
+        turned into a Telegram spam burst rather than a useful alert. They're
+        still logged/counted (main.py's log_opportunity calls); check /report
+        or the dashboard's Arbitrage P&L card for cumulative $ instead."""
         if not config.TELEGRAM_API_BOT:
             return
         import logger

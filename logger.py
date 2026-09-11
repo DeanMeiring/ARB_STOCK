@@ -292,6 +292,40 @@ def get_report_stats(source: str = "triangular") -> dict:
     }
 
 
+def get_arb_pnl_stats(source: str = "triangular") -> dict:
+    """Hypothetical $ P&L if every logged opportunity for this source had
+    actually been filled - an IDEALIZED upper bound, not a guarantee: it
+    assumes instant, full execution at the exact bid/ask captured the
+    moment threshold was crossed, ignoring slippage/latency risk (the book
+    can move or get eaten by someone faster before a real order lands).
+    Every row in `opportunities` already cleared MIN_PROFIT_THRESHOLD
+    (that's why it was logged), so profit_usdt is always positive here -
+    unlike prediction_tracker's paper trades, there's no losing "trade" to
+    net against in this table."""
+    conn = _connect()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT COUNT(*), COALESCE(SUM(profit_usdt), 0)
+        FROM opportunities WHERE source = %s
+    """, (source,))
+    total_count, total_pnl = cur.fetchone()
+
+    cur.execute("""
+        SELECT COUNT(*), COALESCE(SUM(profit_usdt), 0)
+        FROM opportunities
+        WHERE source = %s AND timestamp > NOW() - INTERVAL '24 hours'
+    """, (source,))
+    last_24h_count, last_24h_pnl = cur.fetchone()
+
+    cur.close()
+    conn.close()
+    return {
+        "count": total_count, "total_pnl_usdt": float(total_pnl),
+        "last_24h_count": last_24h_count, "last_24h_pnl_usdt": float(last_24h_pnl),
+    }
+
+
 def log_training_run(status: str, detail: str = None):
     """status: 'success' or 'failed'. One row per run of analyze_opportunity_model.py."""
     conn = _connect()
