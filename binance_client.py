@@ -45,6 +45,10 @@ class BinanceBookTickerStream:
                             symbol=symbol,
                             bid=float(payload["b"]),
                             ask=float(payload["a"]),
+                            # B/A: resting quantity at the best bid/ask - already
+                            # in every bookTicker message, just unused until now.
+                            bid_qty=float(payload["B"]),
+                            ask_qty=float(payload["A"]),
                         )
 
                         # only fire the callback once we have all three symbols

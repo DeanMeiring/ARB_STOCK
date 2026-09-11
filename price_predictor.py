@@ -123,7 +123,10 @@ def predict_all_text() -> str:
         # docstring on why the bare AUC point estimate isn't trustworthy on
         # its own (~60-row autocorrelation from the 1h-ahead label).
         if r.get("auc_significant"):
-            edge_str = f", real edge: AUC {r['auc']:.2f} [{r['auc_ci_low']:.2f}, {r['auc_ci_high']:.2f}]"
+            # 3dp - see analyze_price_trend_model's ci_str comment: 2dp can
+            # make a genuine boundary case (ci_low=0.501) round to "0.50"
+            # and look identical to a non-significant one.
+            edge_str = f", real edge: AUC {r['auc']:.3f} [{r['auc_ci_low']:.3f}, {r['auc_ci_high']:.3f}]"
         else:
             edge_str = " (no proven edge yet)"
         lines.append(f"  {r['symbol']}: {r['prob_up']*100:.0f}%{marker}{accuracy_str}{edge_str}")

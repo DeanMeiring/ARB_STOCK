@@ -87,6 +87,17 @@ def init_db():
     # (BinanceKlineVolumeStream in binance_client.py); backfilled rows get
     # it straight from Binance's REST klines response.
     cur.execute("ALTER TABLE market_candles ADD COLUMN IF NOT EXISTS volume DOUBLE PRECISION")
+    # Order-book microstructure, averaged over the minute - NULL for rows
+    # collected before this was added, and NULL forever for anything that
+    # came through backfill_candles.py/ensure_backfilled: unlike volume,
+    # Binance's historical klines REST endpoint has no bid/ask size data at
+    # all, so there's no backfill path for these two, ever. Only live rows
+    # (main.py's _update_candle, via bookTicker's B/A fields) ever get a
+    # real value. avg_imbalance: mean (bid_qty-ask_qty)/(bid_qty+ask_qty)
+    # across the minute's ticks, in [-1, 1]. avg_spread_bps: mean relative
+    # bid/ask spread in basis points - scale-invariant across coins.
+    cur.execute("ALTER TABLE market_candles ADD COLUMN IF NOT EXISTS avg_imbalance DOUBLE PRECISION")
+    cur.execute("ALTER TABLE market_candles ADD COLUMN IF NOT EXISTS avg_spread_bps DOUBLE PRECISION")
 
     # Trained model artifacts - Railway's filesystem doesn't persist across
     # deploys/restarts, so the serialized model lives here instead of on
@@ -306,14 +317,15 @@ def get_latest_training_run():
 
 
 def log_candle(symbol: str, candle_start, open_: float, high: float, low: float, close: float, tick_count: int,
-               volume: float = None):
+               volume: float = None, avg_imbalance: float = None, avg_spread_bps: float = None):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO market_candles (symbol, candle_start, open, high, low, close, tick_count, volume)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO market_candles (symbol, candle_start, open, high, low, close, tick_count, volume,
+                                     avg_imbalance, avg_spread_bps)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (symbol, candle_start) DO NOTHING
-    """, (symbol, candle_start, open_, high, low, close, tick_count, volume))
+    """, (symbol, candle_start, open_, high, low, close, tick_count, volume, avg_imbalance, avg_spread_bps))
     conn.commit()
     cur.close()
     conn.close()

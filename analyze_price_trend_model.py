@@ -360,7 +360,10 @@ def train_symbol(symbol: str) -> str:
         ci_low, ci_high = block_bootstrap_auc_ci(y_test, y_prob, block_size=HORIZON_CANDLES)
         if ci_low is not None:
             significant = ci_low > 0.5
-            ci_str = f" [{ci_low:.2f}, {ci_high:.2f}]" + ("" if significant else " (not distinguishable from chance)")
+            # 3dp, not 2 - a boundary case like ci_low=0.501 would otherwise
+            # round to "0.50" and look identical to a genuinely non-significant
+            # result (ci_low=0.499 also rounds to "0.50").
+            ci_str = f" [{ci_low:.3f}, {ci_high:.3f}]" + ("" if significant else " (not distinguishable from chance)")
         else:
             ci_str = " (CI unavailable - too many degenerate resamples)"
 

@@ -18,6 +18,12 @@ class BookTicker:
     symbol: str
     bid: float  # best bid price (what someone will buy from you at)
     ask: float  # best ask price (what someone will sell to you at)
+    # Resting size at the best bid/ask - order-book microstructure, not used
+    # by the arb math above (which only needs price), only by main.py's
+    # candle builder for the imbalance feature. Optional/None for venues
+    # that don't provide it (Crypto.com's ticker endpoint has no size field).
+    bid_qty: float = None
+    ask_qty: float = None
 
 
 @dataclass

@@ -72,19 +72,40 @@ def _track_near_miss(source, result):
         slot["profit_usdt"] = result.profit_usdt
 
 
-def _update_candle(symbol, bid, ask):
+def _update_candle(symbol, bid, ask, bid_qty=None, ask_qty=None):
     price = (bid + ask) / 2
     c = candles_in_progress.get(symbol)
     if c is None:
-        candles_in_progress[symbol] = {
+        c = candles_in_progress[symbol] = {
             "open": price, "high": price, "low": price, "close": price,
             "count": 1, "start": datetime.now(timezone.utc),
+            "imbalance_sum": 0.0, "spread_bps_sum": 0.0, "microstructure_count": 0,
         }
     else:
         c["high"] = max(c["high"], price)
         c["low"] = min(c["low"], price)
         c["close"] = price
         c["count"] += 1
+
+    # Order-book microstructure, accumulated per-tick and averaged at flush
+    # time (flush_candles_periodically) - only when this tick's source
+    # provides resting size. Binance's bookTicker does (bid_qty/ask_qty);
+    # Crypto.com's ticker doesn't, so CRYPTOCOM_BTC_USDT's candle just never
+    # accumulates these and flushes NULL, same as `volume` already does for
+    # symbols BinanceKlineVolumeStream doesn't track.
+    #
+    # imbalance = (bid_qty - ask_qty) / (bid_qty + ask_qty), in [-1, 1] -
+    # e.g. 8 units resting at the bid vs 2 at the ask gives (8-2)/(8+2) =
+    # 0.6, a large wall of buying interest relative to selling. One of the
+    # more-studied short-horizon order-flow signals in market microstructure
+    # (Cont/Kukanov/Stoikov's price-impact work is the standard reference).
+    #
+    # spread_bps: relative bid/ask spread in basis points - scale-invariant
+    # across BTC (~$100k) vs DOGE (~$0.10), same reasoning as volume_ratio.
+    if bid_qty is not None and ask_qty is not None and (bid_qty + ask_qty) > 0:
+        c["imbalance_sum"] += (bid_qty - ask_qty) / (bid_qty + ask_qty)
+        c["spread_bps_sum"] += (ask - bid) / price * 10000
+        c["microstructure_count"] += 1
 
 
 async def on_price_update(latest: dict):
@@ -96,7 +117,7 @@ async def on_price_update(latest: dict):
     for symbol in config.PREDICT_EXTRA_SYMBOLS:
         ticker = latest.get(symbol)
         if ticker:
-            _update_candle(symbol, ticker.bid, ticker.ask)
+            _update_candle(symbol, ticker.bid, ticker.ask, ticker.bid_qty, ticker.ask_qty)
 
     btcusdt = latest.get(config.LEG_1.upper())
     ethbtc = latest.get(config.LEG_2.upper())
@@ -105,9 +126,9 @@ async def on_price_update(latest: dict):
     if not (btcusdt and ethbtc and ethusdt):
         return  # still waiting on one of the three streams
 
-    _update_candle("BTCUSDT", btcusdt.bid, btcusdt.ask)
-    _update_candle("ETHBTC", ethbtc.bid, ethbtc.ask)
-    _update_candle("ETHUSDT", ethusdt.bid, ethusdt.ask)
+    _update_candle("BTCUSDT", btcusdt.bid, btcusdt.ask, btcusdt.bid_qty, btcusdt.ask_qty)
+    _update_candle("ETHBTC", ethbtc.bid, ethbtc.ask, ethbtc.bid_qty, ethbtc.ask_qty)
+    _update_candle("ETHUSDT", ethusdt.bid, ethusdt.ask, ethusdt.bid_qty, ethusdt.ask_qty)
 
     fwd, rev = check_both_directions(btcusdt, ethbtc, ethusdt)
 
@@ -200,7 +221,11 @@ async def flush_candles_periodically():
             # everything else (e.g. ETHBTC, CRYPTOCOM_BTC_USDT), same as
             # before this existed.
             volume = volume_stream.latest_volume.get(symbol)
-            logger.log_candle(symbol, c["start"], c["open"], c["high"], c["low"], c["close"], c["count"], volume)
+            n = c["microstructure_count"]
+            avg_imbalance = c["imbalance_sum"] / n if n else None
+            avg_spread_bps = c["spread_bps_sum"] / n if n else None
+            logger.log_candle(symbol, c["start"], c["open"], c["high"], c["low"], c["close"], c["count"], volume,
+                               avg_imbalance, avg_spread_bps)
             del candles_in_progress[symbol]
 
 
