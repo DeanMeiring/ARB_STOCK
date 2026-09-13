@@ -260,10 +260,16 @@ async def prediction_tracking_loop():
         await asyncio.sleep(remaining.total_seconds())
 
     while True:
-        try:
-            await asyncio.to_thread(prediction_tracker.check_signals)
-        except Exception as e:
-            print(f"[prediction-tracker] error: {e}")
+        # Both strategies run every tick, each wrapped separately so a bug
+        # in the still-being-evaluated relative strategy can never take
+        # down the absolute strategy's tracking (the one /predict and the
+        # main dashboard actually rely on) - see prediction_tracker.
+        # check_signals' strategy param.
+        for strategy in ("absolute", "relative"):
+            try:
+                await asyncio.to_thread(prediction_tracker.check_signals, strategy)
+            except Exception as e:
+                print(f"[prediction-tracker:{strategy}] error: {e}")
         prediction_schedule["next_check_at"] = datetime.now(timezone.utc) + interval
         await asyncio.sleep(interval.total_seconds())
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ARB_STOCK Dashboard</title>
+<title>ARB_STOCK — Relative-Strength Model</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
   :root {
@@ -12,7 +12,7 @@
     --card-border: #1f2530;
     --text: #e6e8ec;
     --text-dim: #8a91a3;
-    --accent: #f0b90b;
+    --accent: #a855f7;
     --green: #2ebd85;
     --red: #f6465d;
     --blue: #5b8def;
@@ -41,6 +41,8 @@
     gap: 10px;
   }
   h1 .accent { color: var(--accent); }
+  h1 a.back { font-size: 12px; color: var(--text-dim); text-decoration: none; border: 1px solid var(--card-border); border-radius: 6px; padding: 4px 8px; }
+  h1 a.back:hover { color: var(--text); border-color: var(--accent); }
   .status {
     display: flex;
     align-items: center;
@@ -56,6 +58,15 @@
     box-shadow: 0 0 6px var(--green);
   }
   .dot.stale { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .banner {
+    background: var(--card);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 12px 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+  }
   .controls {
     display: flex;
     flex-wrap: wrap;
@@ -166,25 +177,27 @@
     height: 280px;
     min-width: 280px;
   }
-  .chart-wrap-tall { height: 380px; }
   .empty {
     color: var(--text-dim);
     font-size: 13px;
     text-align: center;
     padding: 40px 0;
   }
-  table.models {
+  table.cmp {
     width: 100%;
     border-collapse: collapse;
     font-size: 12px;
   }
-  table.models th, table.models td {
+  table.cmp th, table.cmp td {
     text-align: left;
-    padding: 6px 8px;
+    padding: 8px 10px;
     border-bottom: 1px solid var(--card-border);
     color: var(--text-dim);
   }
-  table.models td:first-child { color: var(--text); }
+  table.cmp td:first-child { color: var(--text); font-weight: 600; }
+  table.cmp th { color: var(--text); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .edge-yes { color: var(--green); font-weight: 600; }
+  .edge-no { color: var(--text-dim); }
   #trades-list, #pred-vs-actual-list {
     margin-top: 12px;
     display: flex;
@@ -231,12 +244,16 @@
 <body>
 
 <header>
-  <h1>ARB<span class="accent">_STOCK</span> Dashboard <a href="/relative" style="font-size:12px;color:var(--text-dim);text-decoration:none;border:1px solid var(--card-border);border-radius:6px;padding:4px 8px;">relative-strength model &rarr;</a></h1>
+  <h1>ARB<span class="accent">_STOCK</span> — Relative-Strength Model <a class="back" href="/">&larr; main dashboard</a></h1>
   <div class="status">
     <span class="dot" id="status-dot"></span>
     <span id="status-text">loading...</span>
   </div>
 </header>
+
+<div class="banner">
+  This page tracks the <strong>cross-sectional</strong> model: instead of predicting whether a coin's price goes up in absolute terms, it predicts whether the coin will <em>beat the basket's mean return</em> over the next hour (market-wide moves cancelled out). It is not live in <code>/predict</code> or the Telegram bot yet — everything here (predictions, paper trades, P&amp;L) is a separate, independent mock/paper-trading run so it can be evaluated before any decision to promote it. Same mechanics as the main dashboard's paper trading, just against this different target.
+</div>
 
 <div class="controls">
   <div class="control-group">
@@ -259,28 +276,14 @@
 
 <div class="tiles">
   <div class="tile">
-    <div class="label">Above 65% (last 4h)</div>
-    <div class="value" id="tile-crossings">--</div>
-    <div class="sub" id="tile-crossings-sub"></div>
-  </div>
-  <div class="tile">
     <div class="label">Next paper-trade check</div>
     <div class="value" id="tile-next-check">--</div>
-    <div class="sub" id="tile-next-check-sub">buys/sells whichever coins cross 65% right then</div>
+    <div class="sub" id="tile-next-check-sub">same hourly cadence as the absolute strategy</div>
   </div>
   <div class="tile">
     <div class="label">Gross win rate (lifetime, before fees)</div>
     <div class="value" id="tile-gross-winrate">--</div>
-    <div class="sub" id="tile-gross-winrate-sub">price direction only, ignores fees</div>
-  </div>
-  <div class="tile">
-    <div class="label">Telegram subscribers</div>
-    <div class="value" id="tile-subs">--</div>
-  </div>
-  <div class="tile">
-    <div class="label">Last training run</div>
-    <div class="value" id="tile-training">--</div>
-    <div class="sub" id="tile-training-sub"></div>
+    <div class="sub" id="tile-gross-winrate-sub">beat-the-basket call only, ignores fees</div>
   </div>
   <div class="tile">
     <div class="label">Paper-trade win rate (today)</div>
@@ -301,87 +304,40 @@
 
 <div class="charts">
   <div class="card full">
-    <h2 id="heading-signal">Multi-coin signal</h2>
-    <p class="desc">Every tracked coin's price, normalized to % change since the start of the window, colored by its latest prediction. Click a legend entry to isolate a coin.</p>
-    <div class="chart-wrap chart-wrap-tall"><canvas id="chart-signal"></canvas></div>
+    <h2>Absolute vs. relative — does the reframing help?</h2>
+    <p class="desc">Same coin, two models: the plain up/down model (left) vs. this page's beat-the-basket model (right). "Real edge" means the bootstrap AUC confidence interval clears 0.5 entirely — see analyze_price_trend_model's evaluation methodology. This table is the actual point of this page.</p>
+    <div id="compare-table"><div class="empty">Loading...</div></div>
   </div>
 
   <div class="card full">
-    <h2 id="heading-price">BTCUSDT price</h2>
-    <p class="desc">From the 1-minute candle history collected for model training. Pick a coin above. ▲ = paper-trade buy, ▼ = sell.</p>
-    <div class="chart-wrap"><canvas id="chart-price"></canvas></div>
-    <div id="trades-list"></div>
-  </div>
-
-  <div class="card">
-    <h2 id="heading-near-misses">Near-miss trend</h2>
-    <p class="desc">Best sub-threshold sample every 30s, per detector. Dashed = profit threshold.</p>
-    <div class="chart-wrap"><canvas id="chart-near-misses"></canvas></div>
-  </div>
-
-  <div class="card full">
-    <h2>Price-trend predictions &mdash; probability of going up</h2>
-    <p class="desc">Live - recomputes on every refresh (30s). This is NOT what the paper-trading loop acted on; see the frozen snapshot below for that. Dashed = alert threshold.</p>
+    <h2>Relative-strength predictions &mdash; probability of beating the basket</h2>
+    <p class="desc">Live - recomputes on every refresh (30s). Dashed = alert threshold (same config.PREDICT_UP_THRESHOLD as the absolute strategy).</p>
     <div class="chart-wrap"><canvas id="chart-predictions"></canvas></div>
   </div>
 
   <div class="card full">
-    <h2 id="heading-last-check">Last hourly check &mdash; what the system actually saw</h2>
-    <p class="desc">Frozen at the moment prediction_tracking_loop last ran - only changes when the next real hourly check fires, unlike the live chart above. This is what actually decided each buy/sell/hold.</p>
+    <h2 id="heading-last-check">Last hourly check &mdash; what the relative strategy actually saw</h2>
+    <p class="desc">Frozen at the moment this strategy's slot of prediction_tracking_loop last ran - this is what actually decided each buy/sell/hold for the relative strategy.</p>
     <div class="chart-wrap"><canvas id="chart-last-check"></canvas></div>
   </div>
 
   <div class="card full">
-    <h2>Predicted vs actual price &mdash; after the hour</h2>
-    <p class="desc">Every hourly check's price at prediction time vs. the actual price ~1h later, per coin. &check; = the direction the model called matched what actually happened; &cross; = it didn't. Rows appear once their hour has elapsed.</p>
+    <h2 id="heading-price">BTCUSDT price</h2>
+    <p class="desc">Pick a coin above. ▲ = relative-strategy paper-trade buy, ▼ = sell. These are independent positions from the absolute strategy's trades on the main dashboard - a coin can be held by both at once.</p>
+    <div class="chart-wrap"><canvas id="chart-price"></canvas></div>
+    <div id="trades-list"></div>
+  </div>
+
+  <div class="card full">
+    <h2>Predicted vs actual &mdash; after the hour</h2>
+    <p class="desc">Every hourly check's implied call vs. what actually happened, per coin. &check; = the model's beat-the-basket call was right; &cross; = it wasn't. Rows appear once their hour has elapsed.</p>
     <div id="pred-vs-actual-list"></div>
-  </div>
-
-  <div class="card full">
-    <h2>Trained models</h2>
-    <p class="desc">Every model in Postgres, with whatever metadata it was saved with.</p>
-    <div id="models-table"><div class="empty">Loading...</div></div>
-  </div>
-
-  <div class="card full">
-    <h2 id="heading-opportunities">Detected opportunities &mdash; profit %</h2>
-    <p class="desc">Triangular (Binance) and cross-exchange (Binance vs Crypto.com), every logged event. Click a legend entry to toggle it.</p>
-    <div class="chart-wrap"><canvas id="chart-opportunities"></canvas></div>
-  </div>
-
-  <div class="card full">
-    <h2>Arbitrage &mdash; hypothetical P&amp;L</h2>
-    <p class="desc">What every logged, threshold-clearing opportunity would have made if filled instantly and in full at the exact bid/ask it was detected at. An idealized upper bound, not a guarantee - real execution has slippage and latency risk (the book can move, or someone faster eats it, before an order actually lands).</p>
-    <div class="tiles" id="arb-pnl-tiles">
-      <div class="tile">
-        <div class="label">Triangular &mdash; lifetime</div>
-        <div class="value" id="tile-arb-tri-lifetime">--</div>
-        <div class="sub" id="tile-arb-tri-lifetime-sub"></div>
-      </div>
-      <div class="tile">
-        <div class="label">Triangular &mdash; last 24h</div>
-        <div class="value" id="tile-arb-tri-24h">--</div>
-        <div class="sub" id="tile-arb-tri-24h-sub"></div>
-      </div>
-      <div class="tile">
-        <div class="label">Cross-exchange &mdash; lifetime</div>
-        <div class="value" id="tile-arb-cx-lifetime">--</div>
-        <div class="sub" id="tile-arb-cx-lifetime-sub"></div>
-      </div>
-      <div class="tile">
-        <div class="label">Cross-exchange &mdash; last 24h</div>
-        <div class="value" id="tile-arb-cx-24h">--</div>
-        <div class="sub" id="tile-arb-cx-24h-sub"></div>
-      </div>
-    </div>
   </div>
 </div>
 
 <footer>Auto-refreshes every 30s (toggle above) &middot; times in SAST (UTC+2)</footer>
 
 <script>
-const SOURCE_COLORS = { triangular: "#f0b90b", cross_exchange: "#5b8def" };
-
 // SAST (South Africa Standard Time) is UTC+2 year-round, no DST - so a
 // fixed offset is all that's needed, no timezone library required.
 const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
@@ -399,18 +355,12 @@ function fmtClock(iso) {
 }
 
 const RANGE_LABELS = { 1: "last 1h", 6: "last 6h", 24: "last 24h", 72: "last 3d", 168: "last 7d" };
-const SIGNAL_PALETTE = ["#f0b90b", "#5b8def", "#2ebd85", "#a855f7", "#06b6d4", "#f97316", "#f6465d", "#e879f9"];
 
 let charts = {};
-let minProfitThresholdPct = 0.05;
 let predictUpThresholdPct = 65;
 let autoRefreshTimer = null;
 const state = { hours: 24, symbol: "BTCUSDT" };
 
-// Empty-state helper for chart cards - hides the <canvas> and shows a
-// message NEXT TO it, rather than replacing the wrap's innerHTML (which
-// used to destroy the canvas element permanently, so the following refresh
-// that had real data crashed on document.getElementById(id) === null).
 function showEmpty(canvasId, message) {
   const canvas = document.getElementById(canvasId);
   canvas.style.display = "none";
@@ -443,23 +393,6 @@ async function fetchJSON(url) {
   return resp.json();
 }
 
-function renderStats(stats) {
-  document.getElementById("tile-subs").textContent = stats.subscribers;
-
-  const trainingEl = document.getElementById("tile-training");
-  const trainingSubEl = document.getElementById("tile-training-sub");
-  trainingEl.classList.remove("status-success", "status-failed");
-  if (stats.latest_training_run) {
-    const run = stats.latest_training_run;
-    trainingEl.textContent = run.status.toUpperCase();
-    trainingEl.classList.add(run.status === "success" ? "status-success" : "status-failed");
-    trainingSubEl.textContent = fmtDateTime(run.ran_at) + " SAST";
-  } else {
-    trainingEl.textContent = "never run";
-    trainingSubEl.textContent = "";
-  }
-}
-
 function renderNextCheck(data) {
   const el = document.getElementById("tile-next-check");
   const subEl = document.getElementById("tile-next-check-sub");
@@ -472,33 +405,6 @@ function renderNextCheck(data) {
   el.textContent = fmtTime(data.next_check_at) + " SAST";
   const minsLeft = Math.round((nextAt.getTime() - Date.now()) / 60000);
   subEl.textContent = minsLeft > 0 ? `in ~${minsLeft} min` : "any moment now";
-}
-
-function renderThresholdCrossings(data) {
-  document.getElementById("tile-crossings").textContent = data.count;
-  const bySymbol = data.by_symbol || {};
-  const parts = Object.entries(bySymbol).map(([s, c]) => `${s}: ${c}`);
-  document.getElementById("tile-crossings-sub").textContent = parts.length ? parts.join(", ") : "none in this window";
-}
-
-function renderArbPnl(data) {
-  const fill = (prefix, count, pnl) => {
-    const el = document.getElementById(`tile-arb-${prefix}`);
-    const subEl = document.getElementById(`tile-arb-${prefix}-sub`);
-    el.classList.remove("status-success");
-    if (!count) {
-      el.textContent = "$0.00";
-      subEl.textContent = "none logged yet";
-      return;
-    }
-    el.textContent = `+$${pnl.toFixed(2)}`;
-    el.classList.add("status-success");
-    subEl.textContent = `${count} opportunities`;
-  };
-  fill("tri-lifetime", data.triangular.count, data.triangular.total_pnl_usdt);
-  fill("tri-24h", data.triangular.last_24h_count, data.triangular.last_24h_pnl_usdt);
-  fill("cx-lifetime", data.cross_exchange.count, data.cross_exchange.total_pnl_usdt);
-  fill("cx-24h", data.cross_exchange.last_24h_count, data.cross_exchange.last_24h_pnl_usdt);
 }
 
 function renderPredictionAccuracy(stats) {
@@ -521,7 +427,7 @@ function renderPredictionAccuracy(stats) {
 
   if (!stats.lifetime_total) {
     grossEl.textContent = "--";
-    grossSubEl.textContent = "price direction only, ignores fees";
+    grossSubEl.textContent = "beat-the-basket call only, ignores fees";
   } else {
     grossEl.textContent = `${stats.lifetime_gross_win_rate_pct.toFixed(0)}%`;
     grossEl.classList.add(stats.lifetime_gross_win_rate_pct >= 50 ? "status-success" : "status-failed");
@@ -546,100 +452,6 @@ function renderPredictionAccuracy(stats) {
   pnlEl.textContent = `${stats.pnl_usdt >= 0 ? "+" : ""}$${stats.pnl_usdt.toFixed(2)}`;
   pnlEl.classList.add(stats.pnl_usdt >= 0 ? "status-success" : "status-failed");
   pnlSubEl.textContent = "buy >=threshold, sell <threshold";
-}
-
-function renderOpportunities(rows) {
-  document.getElementById("heading-opportunities").textContent = `Detected opportunities — profit % (${RANGE_LABELS[state.hours]})`;
-  if (!rows.length) {
-    showEmpty("chart-opportunities", "No opportunities logged in this window yet.");
-    return;
-  }
-  const labels = [...new Set(rows.map(r => r.timestamp))].sort();
-  const labelText = labels.map(fmtTime);
-
-  const bySource = { triangular: {}, cross_exchange: {} };
-  rows.forEach(r => { bySource[r.source][r.timestamp] = r.profit_pct * 100; });
-
-  const datasets = Object.keys(SOURCE_COLORS)
-    .filter(source => Object.keys(bySource[source]).length)
-    .map(source => ({
-      label: source,
-      data: labels.map(t => bySource[source][t] ?? null),
-      borderColor: SOURCE_COLORS[source],
-      backgroundColor: SOURCE_COLORS[source],
-      spanGaps: false,
-      showLine: false,
-      pointRadius: 4,
-    }));
-
-  ensureChart("chart-opportunities", {
-    type: "line",
-    data: { labels: labelText, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: "#e6e8ec" } },
-        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y.toFixed(4)}%` } },
-      },
-      scales: {
-        x: { ticks: { color: "#8a91a3", maxTicksLimit: 12 }, grid: { color: "#1f2530" } },
-        y: { ticks: { color: "#8a91a3", callback: (v) => v + "%" }, grid: { color: "#1f2530" } },
-      },
-    },
-  });
-}
-
-function renderSignal(candlesMulti, predictions) {
-  document.getElementById("heading-signal").textContent = `Multi-coin signal (${RANGE_LABELS[state.hours]})`;
-
-  const predBySymbol = {};
-  predictions.forEach(p => { predBySymbol[p.symbol] = p; });
-
-  const symbols = Object.keys(candlesMulti).filter(s => candlesMulti[s].length > 1);
-  if (!symbols.length) {
-    showEmpty("chart-signal", "No candle history in this window yet.");
-    return;
-  }
-
-  const allTimestamps = [...new Set(symbols.flatMap(s => candlesMulti[s].map(r => r.timestamp)))].sort();
-  const labelText = allTimestamps.map(fmtTime);
-
-  const datasets = symbols.map((symbol, i) => {
-    const rows = candlesMulti[symbol];
-    const base = rows[0].close;
-    const byTime = {};
-    rows.forEach(r => { byTime[r.timestamp] = ((r.close - base) / base) * 100; });
-
-    const pred = predBySymbol[symbol];
-    const isUp = pred ? pred.prob_up >= 0.5 : null;
-    const pct = pred ? (isUp ? pred.prob_up * 100 : (1 - pred.prob_up) * 100) : null;
-    const label = pred ? `${symbol} ${isUp ? "▲" : "▼"} ${pct.toFixed(0)}%` : symbol;
-    const color = SIGNAL_PALETTE[i % SIGNAL_PALETTE.length];
-
-    return {
-      label, symbolName: symbol,
-      data: allTimestamps.map(t => byTime[t] ?? null),
-      borderColor: color, backgroundColor: color,
-      spanGaps: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5,
-      borderDash: pred && !isUp ? [4, 3] : [],
-    };
-  });
-
-  ensureChart("chart-signal", {
-    type: "line",
-    data: { labels: labelText, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: "#e6e8ec", boxWidth: 12 } },
-        tooltip: { callbacks: { label: (c) => `${c.dataset.symbolName}: ${c.parsed.y >= 0 ? "+" : ""}${c.parsed.y.toFixed(2)}% since window start` } },
-      },
-      scales: {
-        x: { ticks: { color: "#8a91a3", maxTicksLimit: 12 }, grid: { color: "#1f2530" } },
-        y: { ticks: { color: "#8a91a3", callback: (v) => v + "%" }, grid: { color: "#1f2530" } },
-      },
-    },
-  });
 }
 
 function nearestCandleIndex(rows, iso) {
@@ -677,7 +489,7 @@ function renderPrice(rows, trades) {
       datasets: [
         {
           label: state.symbol, data: rows.map(r => r.close),
-          borderColor: "#f0b90b", backgroundColor: "#f0b90b",
+          borderColor: "#a855f7", backgroundColor: "#a855f7",
           tension: 0.15, pointRadius: 0, borderWidth: 1.5,
         },
         {
@@ -764,63 +576,21 @@ function renderPredictionVsActual(rows) {
   el.innerHTML = rowsHtml;
 }
 
-function renderNearMisses(rows) {
-  document.getElementById("heading-near-misses").textContent = `Near-miss trend (${RANGE_LABELS[state.hours]})`;
-  if (!rows.length) {
-    showEmpty("chart-near-misses", "No near-miss samples in this window yet.");
-    return;
-  }
-  const labels = [...new Set(rows.map(r => r.timestamp))].sort();
-  const labelText = labels.map(fmtTime);
-
-  const bySource = { triangular: {}, cross_exchange: {} };
-  rows.forEach(r => { bySource[r.source][r.timestamp] = r.profit_pct * 100; });
-
-  const datasets = Object.keys(SOURCE_COLORS)
-    .filter(source => Object.keys(bySource[source]).length)
-    .map(source => ({
-      label: source,
-      data: labels.map(t => bySource[source][t] ?? null),
-      borderColor: SOURCE_COLORS[source],
-      backgroundColor: SOURCE_COLORS[source],
-      spanGaps: true, tension: 0.15, pointRadius: 0, borderWidth: 1.5,
-    }));
-
-  datasets.push({
-    label: "threshold",
-    data: labels.map(() => minProfitThresholdPct),
-    borderColor: "#8a91a3", borderDash: [5, 5], pointRadius: 0, borderWidth: 1,
-  });
-
-  ensureChart("chart-near-misses", {
-    type: "line",
-    data: { labels: labelText, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: "#e6e8ec", boxWidth: 12 } } },
-      scales: {
-        x: { ticks: { color: "#8a91a3", maxTicksLimit: 8 }, grid: { color: "#1f2530" } },
-        y: { ticks: { color: "#8a91a3", callback: (v) => v + "%" }, grid: { color: "#1f2530" } },
-      },
-    },
-  });
-}
-
 function renderPredictions(rows) {
   if (!rows.length) {
-    showEmpty("chart-predictions", "No trained prediction models yet - check back after the daily training job runs (08:00 SAST).");
+    showEmpty("chart-predictions", "No trained relative-strength models yet - check back after the daily training job runs (08:00 SAST).");
     return;
   }
   const labels = rows.map(r => r.symbol);
   const values = rows.map(r => r.prob_up * 100);
-  const colors = values.map(v => v >= predictUpThresholdPct ? "#2ebd85" : "#5b8def");
+  const colors = values.map(v => v >= predictUpThresholdPct ? "#2ebd85" : "#a855f7");
 
   ensureChart("chart-predictions", {
     type: "bar",
     data: {
       labels,
       datasets: [
-        { label: "prob up %", data: values, backgroundColor: colors },
+        { label: "prob beats basket %", data: values, backgroundColor: colors },
         {
           label: "threshold", type: "line",
           data: labels.map(() => predictUpThresholdPct),
@@ -848,22 +618,22 @@ function renderLastCheck(snapshot) {
   const rows = snapshot.predictions || [];
 
   if (!snapshot.checked_at || !rows.length) {
-    headingEl.textContent = "Last hourly check — what the system actually saw";
-    showEmpty("chart-last-check", 'No check has happened yet since this deploy - see the "Next paper-trade check" tile above for when the first one is due.');
+    headingEl.textContent = "Last hourly check — what the relative strategy actually saw";
+    showEmpty("chart-last-check", 'No check has happened yet since this deploy.');
     return;
   }
 
-  headingEl.textContent = `Last hourly check (${fmtDateTime(snapshot.checked_at)} SAST) — what the system actually saw`;
+  headingEl.textContent = `Last hourly check (${fmtDateTime(snapshot.checked_at)} SAST) — what the relative strategy actually saw`;
   const labels = rows.map(r => r.symbol);
   const values = rows.map(r => r.prob_up * 100);
-  const colors = values.map(v => v >= predictUpThresholdPct ? "#2ebd85" : "#5b8def");
+  const colors = values.map(v => v >= predictUpThresholdPct ? "#2ebd85" : "#a855f7");
 
   ensureChart("chart-last-check", {
     type: "bar",
     data: {
       labels,
       datasets: [
-        { label: "prob up %", data: values, backgroundColor: colors },
+        { label: "prob beats basket %", data: values, backgroundColor: colors },
         {
           label: "threshold", type: "line",
           data: labels.map(() => predictUpThresholdPct),
@@ -886,18 +656,25 @@ function renderLastCheck(snapshot) {
   });
 }
 
-function renderModels(models) {
-  const el = document.getElementById("models-table");
-  if (!models.length) {
+function fmtAuc(m) {
+  if (!m) return '<span class="edge-no">no model yet</span>';
+  if (m.auc == null) return '<span class="edge-no">n/a</span>';
+  const ci = (m.auc_ci_low != null && m.auc_ci_high != null)
+    ? ` [${m.auc_ci_low.toFixed(3)}, ${m.auc_ci_high.toFixed(3)}]` : "";
+  const cls = m.auc_significant ? "edge-yes" : "edge-no";
+  const tag = m.auc_significant ? "real edge" : "no proven edge";
+  return `<span class="${cls}">${m.auc.toFixed(3)}${ci} &middot; ${tag}</span>`;
+}
+
+function renderCompareTable(rows) {
+  const el = document.getElementById("compare-table");
+  if (!rows.length) {
     el.innerHTML = '<div class="empty">No models trained yet.</div>';
     return;
   }
-  let html = '<table class="models"><thead><tr><th>Model</th><th>Trained</th><th>Info</th></tr></thead><tbody>';
-  for (const m of models) {
-    const trained = fmtDateTime(m.trained_at);
-    const meta = m.metadata || {};
-    const info = Object.entries(meta).map(([k, v]) => `${k}: ${typeof v === "number" ? v.toFixed ? v.toFixed(3) : v : v}`).join(", ");
-    html += `<tr><td>${m.model_name}</td><td>${trained} SAST</td><td>${info || "-"}</td></tr>`;
+  let html = '<table class="cmp"><thead><tr><th>Coin</th><th>Absolute (up/down) AUC [95% CI]</th><th>Relative (vs. basket) AUC [95% CI]</th></tr></thead><tbody>';
+  for (const r of rows) {
+    html += `<tr><td>${r.symbol}</td><td>${fmtAuc(r.absolute)}</td><td>${fmtAuc(r.relative)}</td></tr>`;
   }
   html += "</tbody></table>";
   el.innerHTML = html;
@@ -908,45 +685,32 @@ let configLoaded = false;
 async function refresh() {
   try {
     const calls = [
-      fetchJSON(`/api/stats`),
-      fetchJSON(`/api/opportunities?hours=${state.hours}`),
-      fetchJSON(`/api/candles?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}`),
-      fetchJSON(`/api/near_misses?hours=${state.hours}`),
-      fetchJSON(`/api/predictions`),
-      fetchJSON(`/api/models`),
-      fetchJSON(`/api/candles_multi?hours=${state.hours}`),
-      fetchJSON(`/api/prediction_accuracy`),
-      fetchJSON(`/api/paper_trades?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}`),
-      fetchJSON(`/api/threshold_crossings?hours=4`),
+      fetchJSON(`/api/predictions?strategy=relative`),
+      fetchJSON(`/api/predictions_compare`),
+      fetchJSON(`/api/prediction_accuracy?strategy=relative`),
+      fetchJSON(`/api/paper_trades?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}&strategy=relative`),
       fetchJSON(`/api/prediction_schedule`),
-      fetchJSON(`/api/last_check_snapshot`),
-      fetchJSON(`/api/prediction_vs_actual?hours=${state.hours}`),
-      fetchJSON(`/api/arb_pnl`),
+      fetchJSON(`/api/last_check_snapshot?strategy=relative`),
+      fetchJSON(`/api/prediction_vs_actual?hours=${state.hours}&strategy=relative`),
+      fetchJSON(`/api/candles?symbol=${encodeURIComponent(state.symbol)}&hours=${state.hours}`),
     ];
     if (!configLoaded) calls.unshift(fetchJSON("/api/config"));
     const results = await Promise.all(calls);
     if (!configLoaded) {
       const cfg = results.shift();
-      minProfitThresholdPct = cfg.min_profit_threshold_pct;
       predictUpThresholdPct = cfg.predict_up_threshold_pct;
       populateSymbolSelect(cfg.predict_symbols || ["BTCUSDT"]);
       configLoaded = true;
     }
-    const [stats, opportunities, candles, nearMisses, predictions, models, candlesMulti, predictionAccuracy, paperTrades, thresholdCrossings, predictionSchedule, lastCheckSnapshot, predictionVsActual, arbPnl] = results;
+    const [predictions, compare, predictionAccuracy, paperTrades, predictionSchedule, lastCheckSnapshot, predictionVsActual, candles] = results;
 
-    renderStats(stats);
-    renderArbPnl(arbPnl);
-    renderThresholdCrossings(thresholdCrossings);
+    renderCompareTable(compare);
     renderNextCheck(predictionSchedule);
     renderLastCheck(lastCheckSnapshot);
     renderPredictionVsActual(predictionVsActual);
     renderPredictionAccuracy(predictionAccuracy);
-    renderSignal(candlesMulti, predictions);
     renderPrice(candles, paperTrades);
-    renderNearMisses(nearMisses);
     renderPredictions(predictions);
-    renderModels(models);
-    renderOpportunities(opportunities);
 
     document.getElementById("status-dot").classList.remove("stale");
     document.getElementById("status-text").textContent = "live · updated " + fmtClock(new Date().toISOString()) + " SAST";

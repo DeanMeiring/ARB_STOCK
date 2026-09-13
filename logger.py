@@ -539,10 +539,17 @@ def init_trading_tables():
 def init_prediction_tracking():
     """
     paper_trades: prediction_tracker.py's simulated long, one open position
-    per symbol at a time - opened the moment prob_up crosses >=
+    per symbol PER STRATEGY at a time - opened the moment prob_up crosses >=
     config.PREDICT_UP_THRESHOLD, closed the moment it drops back below.
     Pure paper tracking, no relation to trades/governor_state above - no
     real order is ever involved.
+
+    strategy: 'absolute' (default - is-price-going-up, what /predict shows)
+    or 'relative' (cross-sectional - does-this-coin-beat-the-basket, see
+    analyze_price_trend_model.build_features_relative) - same table, same
+    mechanics, kept apart the same way opportunities.source already keeps
+    triangular/cross_exchange apart, so a coin can have one open position
+    per strategy simultaneously and independently.
     """
     conn = _connect()
     cur = conn.cursor()
@@ -564,12 +571,6 @@ def init_prediction_tracking():
             pnl_usdt DOUBLE PRECISION
         )
     """)
-    # One open position per symbol at a time - enforced here (a partial
-    # unique index only over open rows), not in application code alone.
-    cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS one_open_paper_trade_per_symbol
-        ON paper_trades (symbol) WHERE open
-    """)
     # close_reason: 'signal' (normal prob_up-crossed-back-below-threshold
     # exit), 'stop_loss', or 'take_profit' - see config.STOP_LOSS_PCT /
     # TAKE_PROFIT_NET_PCT and prediction_tracker.check_signals(). Added
@@ -577,6 +578,17 @@ def init_prediction_tracking():
     # than inline in CREATE TABLE above - same pattern as market_candles'
     # volume column.
     cur.execute("ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS close_reason TEXT")
+    cur.execute("ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS strategy TEXT NOT NULL DEFAULT 'absolute'")
+    # One open position per symbol PER STRATEGY at a time - enforced here (a
+    # partial unique index only over open rows), not in application code
+    # alone. Replaces the pre-strategy-column index (symbol) alone, which
+    # would have blocked a relative-strategy position from opening whenever
+    # an absolute-strategy one was already open on the same coin.
+    cur.execute("DROP INDEX IF EXISTS one_open_paper_trade_per_symbol")
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS one_open_paper_trade_per_symbol_strategy
+        ON paper_trades (symbol, strategy) WHERE open
+    """)
     # prediction_snapshots: what prediction_tracker.py saw for every symbol
     # at every real hourly check, kept even for symbols that didn't cross
     # the buy threshold (paper_trades only records the ones that did) -
@@ -593,25 +605,37 @@ def init_prediction_tracking():
             UNIQUE (symbol, checked_at)
         )
     """)
+    cur.execute("ALTER TABLE prediction_snapshots ADD COLUMN IF NOT EXISTS strategy TEXT NOT NULL DEFAULT 'absolute'")
+    # Same reasoning as paper_trades' index above - the inline UNIQUE from
+    # CREATE TABLE (auto-named prediction_snapshots_symbol_checked_at_key)
+    # predates the strategy column and would otherwise block a relative
+    # snapshot from being logged at the same checked_at an absolute one
+    # already used.
+    cur.execute("ALTER TABLE prediction_snapshots DROP CONSTRAINT IF EXISTS prediction_snapshots_symbol_checked_at_key")
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS prediction_snapshots_symbol_checked_at_strategy
+        ON prediction_snapshots (symbol, checked_at, strategy)
+    """)
     conn.commit()
     cur.close()
     conn.close()
 
 
-def log_prediction_snapshot(symbol: str, checked_at, price: float, prob_up: float, predicted_up: bool):
+def log_prediction_snapshot(symbol: str, checked_at, price: float, prob_up: float, predicted_up: bool,
+                             strategy: str = "absolute"):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO prediction_snapshots (symbol, checked_at, price, prob_up, predicted_up)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (symbol, checked_at) DO NOTHING
-    """, (symbol, checked_at, price, prob_up, predicted_up))
+        INSERT INTO prediction_snapshots (symbol, checked_at, price, prob_up, predicted_up, strategy)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT (symbol, checked_at, strategy) DO NOTHING
+    """, (symbol, checked_at, price, prob_up, predicted_up, strategy))
     conn.commit()
     cur.close()
     conn.close()
 
 
-def get_prediction_vs_actual(hours: int = 48) -> list:
+def get_prediction_vs_actual(hours: int = 48, strategy: str = "absolute") -> list:
     """Every prediction_snapshots row from the last `hours` whose hour has
     actually elapsed, paired with the closest market_candles close within
     +/-5 minutes of checked_at + 1h - i.e. what price the model implicitly
@@ -635,8 +659,9 @@ def get_prediction_vs_actual(hours: int = 48) -> list:
         ) mc ON TRUE
         WHERE ps.checked_at > NOW() - make_interval(hours => %s)
           AND ps.checked_at <= NOW() - INTERVAL '55 minutes'
+          AND ps.strategy = %s
         ORDER BY ps.checked_at DESC, ps.symbol
-    """, (hours,))
+    """, (hours, strategy))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -673,24 +698,26 @@ def get_last_prediction_check_time():
     return row[0] if row else None
 
 
-def get_open_paper_trade(symbol: str):
-    """{'id', 'entry_price'} if symbol currently has an open paper position, else None."""
+def get_open_paper_trade(symbol: str, strategy: str = "absolute"):
+    """{'id', 'entry_price'} if symbol currently has an open paper position
+    under this strategy, else None."""
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT id, entry_price FROM paper_trades WHERE symbol = %s AND open", (symbol,))
+    cur.execute("SELECT id, entry_price FROM paper_trades WHERE symbol = %s AND strategy = %s AND open",
+                (symbol, strategy))
     row = cur.fetchone()
     cur.close()
     conn.close()
     return {"id": row[0], "entry_price": row[1]} if row else None
 
 
-def open_paper_trade(symbol: str, price: float, prob_up: float):
+def open_paper_trade(symbol: str, price: float, prob_up: float, strategy: str = "absolute"):
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO paper_trades (symbol, entry_price, entry_prob_up)
-        VALUES (%s, %s, %s)
-    """, (symbol, price, prob_up))
+        INSERT INTO paper_trades (symbol, entry_price, entry_prob_up, strategy)
+        VALUES (%s, %s, %s, %s)
+    """, (symbol, price, prob_up, strategy))
     conn.commit()
     cur.close()
     conn.close()
@@ -711,7 +738,7 @@ def close_paper_trade(trade_id: int, price: float, prob_up: float, pnl_usdt: flo
     conn.close()
 
 
-def get_threshold_crossings(hours: int = 4) -> dict:
+def get_threshold_crossings(hours: int = 4, strategy: str = "absolute") -> dict:
     """How many times a coin's prediction crossed >= config.PREDICT_UP_THRESHOLD
     in the last `hours` - i.e. paper_trades opened (see prediction_tracker.py's
     entry side), not every tick it happened to stay above. Dashboard tile:
@@ -723,10 +750,10 @@ def get_threshold_crossings(hours: int = 4) -> dict:
     cur.execute("""
         SELECT symbol, COUNT(*)
         FROM paper_trades
-        WHERE entry_at > NOW() - make_interval(hours => %s)
+        WHERE entry_at > NOW() - make_interval(hours => %s) AND strategy = %s
         GROUP BY symbol
         ORDER BY COUNT(*) DESC
-    """, (hours,))
+    """, (hours, strategy))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -736,18 +763,18 @@ def get_threshold_crossings(hours: int = 4) -> dict:
     }
 
 
-def get_recent_paper_trades(symbol: str, hours: int = 24) -> list:
-    """Every paper_trades row (open or closed) for symbol whose entry_at
-    falls in the window, oldest first - feeds the dashboard's price-chart
-    buy/sell markers and its recent-trades list."""
+def get_recent_paper_trades(symbol: str, hours: int = 24, strategy: str = "absolute") -> list:
+    """Every paper_trades row (open or closed) for symbol/strategy whose
+    entry_at falls in the window, oldest first - feeds the dashboard's
+    price-chart buy/sell markers and its recent-trades list."""
     conn = _connect()
     cur = conn.cursor()
     cur.execute("""
         SELECT entry_at, entry_price, entry_prob_up, open, exit_at, exit_price, pnl_usdt, close_reason
         FROM paper_trades
-        WHERE symbol = %s AND entry_at > NOW() - make_interval(hours => %s)
+        WHERE symbol = %s AND strategy = %s AND entry_at > NOW() - make_interval(hours => %s)
         ORDER BY entry_at ASC
-    """, (symbol, hours))
+    """, (symbol, strategy, hours))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -762,7 +789,7 @@ def get_recent_paper_trades(symbol: str, hours: int = 24) -> list:
     ]
 
 
-def get_todays_paper_trade_stats() -> dict:
+def get_todays_paper_trade_stats(strategy: str = "absolute") -> dict:
     """
     Tally of paper_trades that CLOSED today, "today" in SAST (South Africa
     Standard Time, UTC+2, no DST) - matching the dashboard's display
@@ -791,11 +818,11 @@ def get_todays_paper_trade_stats() -> dict:
                COALESCE(SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(pnl_usdt), 0)
         FROM paper_trades
-        WHERE NOT open
+        WHERE NOT open AND strategy = %s
           AND exit_at > date_trunc('day', NOW() AT TIME ZONE 'Africa/Johannesburg') AT TIME ZONE 'Africa/Johannesburg'
-    """)
+    """, (strategy,))
     total, correct_count, pnl_usdt = cur.fetchone()
-    cur.execute("SELECT COUNT(*) FROM paper_trades WHERE open")
+    cur.execute("SELECT COUNT(*) FROM paper_trades WHERE open AND strategy = %s", (strategy,))
     open_count = cur.fetchone()[0]
     # Lifetime = every closed trade ever, not just today's SAST window -
     # same "closed only" rule as above, just with no date filter.
@@ -804,8 +831,8 @@ def get_todays_paper_trade_stats() -> dict:
                COUNT(*),
                COALESCE(SUM(CASE WHEN exit_price > entry_price THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END), 0)
-        FROM paper_trades WHERE NOT open
-    """)
+        FROM paper_trades WHERE NOT open AND strategy = %s
+    """, (strategy,))
     lifetime_pnl_usdt, lifetime_total, lifetime_gross_wins, lifetime_correct = cur.fetchone()
     cur.close()
     conn.close()

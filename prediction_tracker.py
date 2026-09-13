@@ -46,39 +46,49 @@ predicted-vs-actual-price-an-hour-later comparison.
 from datetime import datetime, timezone
 import config
 import logger
-from web import last_check_snapshot
+import web
 
 
-def check_signals():
-    """Deferred import - same reasoning as telegram_bot.py's /predict
-    handler: pandas/xgboost only load when a prediction is actually needed,
-    never in the always-on detector's own import path."""
+def check_signals(strategy: str = "absolute"):
+    """strategy: 'absolute' (default - is-price-going-up, what /predict
+    shows) or 'relative' (cross-sectional - does-this-coin-beat-the-basket,
+    see analyze_price_trend_model.build_features_relative). Runs the exact
+    same paper-trading mechanics either way - only which model gets asked
+    for prob_up and which strategy-tagged rows get written/read changes;
+    see logger.init_prediction_tracking's docstring on how the two stay
+    apart within the same tables. Deferred import below - same reasoning as
+    telegram_bot.py's /predict handler: pandas/xgboost only load when a
+    prediction is actually needed, never in the always-on detector's own
+    import path."""
     import price_predictor
+    predict_fn = price_predictor.predict_symbol if strategy == "absolute" else price_predictor.predict_symbol_relative
+    snapshot_dict = web.last_check_snapshot if strategy == "absolute" else web.last_check_snapshot_relative
 
-    print(f"[prediction-tracker] checking {len(config.PREDICT_SYMBOLS)} symbols "
+    print(f"[prediction-tracker:{strategy}] checking {len(config.PREDICT_SYMBOLS)} symbols "
           f"(threshold {config.PREDICT_UP_THRESHOLD*100:.0f}%)...")
 
     snapshot = []
     checked_at = datetime.now(timezone.utc)
 
     for symbol in config.PREDICT_SYMBOLS:
-        result = price_predictor.predict_symbol(symbol)
+        result = predict_fn(symbol)
         if not isinstance(result, dict):
-            print(f"[prediction-tracker] {symbol}: skipped - {result}")
+            print(f"[prediction-tracker:{strategy}] {symbol}: skipped - {result}")
             continue  # no trained model yet / not enough recent candles - nothing to act on
 
         prob_up, price = result["prob_up"], result["price"]
         snapshot.append({"symbol": symbol, "prob_up": prob_up})
-        open_trade = logger.get_open_paper_trade(symbol)
+        open_trade = logger.get_open_paper_trade(symbol, strategy)
         signal_up = prob_up >= config.PREDICT_UP_THRESHOLD
-        logger.log_prediction_snapshot(symbol, checked_at, price, prob_up, signal_up)
+        logger.log_prediction_snapshot(symbol, checked_at, price, prob_up, signal_up, strategy)
 
         if open_trade is None:
             if signal_up:
-                logger.open_paper_trade(symbol, price, prob_up)
-                print(f"[prediction-tracker] BUY {symbol} @ {price} (prob_up {prob_up*100:.1f}%)")
+                logger.open_paper_trade(symbol, price, prob_up, strategy)
+                print(f"[prediction-tracker:{strategy}] BUY {symbol} @ {price} (prob_up {prob_up*100:.1f}%)")
             else:
-                print(f"[prediction-tracker] {symbol}: prob_up {prob_up*100:.1f}%, no position, below threshold")
+                print(f"[prediction-tracker:{strategy}] {symbol}: prob_up {prob_up*100:.1f}%, "
+                      f"no position, below threshold")
             continue
 
         # open_trade exists past this point - same fee-adjusted P&L feeds
@@ -92,19 +102,19 @@ def check_signals():
 
         if move_pct <= -config.STOP_LOSS_PCT:
             logger.close_paper_trade(open_trade["id"], price, prob_up, pnl_usdt, reason="stop_loss")
-            print(f"[prediction-tracker] STOP-LOSS SELL {symbol} @ {price} (prob_up {prob_up*100:.1f}%) "
+            print(f"[prediction-tracker:{strategy}] STOP-LOSS SELL {symbol} @ {price} (prob_up {prob_up*100:.1f}%) "
                   f"- entry {open_trade['entry_price']}, dropped {move_pct*100:.1f}%, pnl ${pnl_usdt:.2f}")
         elif net_pct >= config.TAKE_PROFIT_NET_PCT:
             logger.close_paper_trade(open_trade["id"], price, prob_up, pnl_usdt, reason="take_profit")
-            print(f"[prediction-tracker] TAKE-PROFIT SELL {symbol} @ {price} (prob_up {prob_up*100:.1f}%) "
+            print(f"[prediction-tracker:{strategy}] TAKE-PROFIT SELL {symbol} @ {price} (prob_up {prob_up*100:.1f}%) "
                   f"- entry {open_trade['entry_price']}, net gain {net_pct*100:.1f}% (incl. fees), pnl ${pnl_usdt:.2f}")
         elif not signal_up:
             logger.close_paper_trade(open_trade["id"], price, prob_up, pnl_usdt, reason="signal")
-            print(f"[prediction-tracker] SELL {symbol} @ {price} (prob_up {prob_up*100:.1f}%) "
+            print(f"[prediction-tracker:{strategy}] SELL {symbol} @ {price} (prob_up {prob_up*100:.1f}%) "
                   f"- entry {open_trade['entry_price']}, pnl ${pnl_usdt:.2f}")
         else:
-            print(f"[prediction-tracker] {symbol}: prob_up {prob_up*100:.1f}%, still holding "
+            print(f"[prediction-tracker:{strategy}] {symbol}: prob_up {prob_up*100:.1f}%, still holding "
                   f"(entry {open_trade['entry_price']})")
 
-    last_check_snapshot["checked_at"] = checked_at
-    last_check_snapshot["predictions"] = sorted(snapshot, key=lambda r: r["prob_up"], reverse=True)
+    snapshot_dict["checked_at"] = checked_at
+    snapshot_dict["predictions"] = sorted(snapshot, key=lambda r: r["prob_up"], reverse=True)

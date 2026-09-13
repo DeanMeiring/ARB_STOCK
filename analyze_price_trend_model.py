@@ -133,6 +133,10 @@ def model_name(symbol: str) -> str:
     return f"price_trend_{symbol.lower()}"
 
 
+def model_name_relative(symbol: str) -> str:
+    return f"price_trend_rel_{symbol.lower()}"
+
+
 class PurgedTimeSeriesSplit:
     """Same expanding-window folds as sklearn's TimeSeriesSplit, but drops
     the last `purge` rows of each fold's train indices - those rows' labels
@@ -249,7 +253,12 @@ def load_btc_lag_series() -> pd.DataFrame:
     return btc[["candle_start", "btc_return_5"]]
 
 
-def build_features(df: pd.DataFrame, btc_lag: pd.DataFrame) -> pd.DataFrame:
+def _add_technical_features(df: pd.DataFrame, btc_lag: pd.DataFrame) -> pd.DataFrame:
+    """return_1/5/15, volatility_15, cyclical hour/day-of-week, volume_ratio,
+    and the btc_return_5 merge - shared by both target framings below
+    (build_features: absolute direction: build_features_relative:
+    cross-sectional vs the basket), which differ only in how `target`
+    itself gets computed, not in what feeds the model."""
     df = df.copy()
     df["return_1"] = df["close"].pct_change(1)
     df["return_5"] = df["close"].pct_change(5)
@@ -272,14 +281,18 @@ def build_features(df: pd.DataFrame, btc_lag: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values("candle_start")
     df = pd.merge_asof(df, btc_lag.sort_values("candle_start"), on="candle_start",
                         direction="backward", tolerance=pd.Timedelta(minutes=5))
-    # target: is price higher HORIZON_CANDLES ahead than it is now? NaN (not
-    # False) for the last HORIZON_CANDLES rows, which have no future price to
-    # compare against - "shift(...) > x" silently evaluates a NaN comparison
-    # as False rather than NaN, so np.where makes that explicit here instead,
-    # to be dropped below rather than mislabeled "down". With HORIZON_CANDLES
-    # at 60 (vs the original 1) this now affects 60 rows per symbol instead
-    # of 1 - trivial against ~130k rows of backfilled history, but wrong is
-    # wrong.
+    return df
+
+
+def build_features(df: pd.DataFrame, btc_lag: pd.DataFrame) -> pd.DataFrame:
+    """Absolute-direction target: is price higher HORIZON_CANDLES ahead
+    than it is now?"""
+    df = _add_technical_features(df, btc_lag)
+    # NaN (not False) for the last HORIZON_CANDLES rows, which have no
+    # future price to compare against - "shift(...) > x" silently evaluates
+    # a NaN comparison as False rather than NaN, so np.where makes that
+    # explicit here instead, to be dropped below rather than mislabeled
+    # "down".
     future_close = df["close"].shift(-HORIZON_CANDLES)
     df["target"] = np.where(future_close.notna(), future_close > df["close"], np.nan)
     df = df.dropna().reset_index(drop=True)
@@ -287,15 +300,57 @@ def build_features(df: pd.DataFrame, btc_lag: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def train_symbol(symbol: str) -> str:
-    df = load_candles(symbol)
-    ensure_backfilled(symbol, df)
-    df = load_candles(symbol)  # re-read - picks up whatever ensure_backfilled just topped up, no-op otherwise
+def build_basket_mean_return(dfs: dict) -> pd.DataFrame:
+    """For every symbol's already-loaded/backfilled candles (dfs: {symbol:
+    df}), computes its own HORIZON_CANDLES-ahead return, then averages
+    across every coin present at each shared timestamp - the "what did the
+    whole basket do this hour" series build_features_relative compares
+    each coin against. Training only: the cross-sectional TARGET is about
+    future relative performance, exactly what's being predicted, so live
+    inference (price_predictor.py) never needs this - only the features
+    change what a model sees, and those are unchanged between the two
+    target framings (see _add_technical_features)."""
+    frames = []
+    for symbol, df in dfs.items():
+        future_close = df["close"].shift(-HORIZON_CANDLES)
+        future_return = (future_close - df["close"]) / df["close"]
+        frames.append(pd.DataFrame({"candle_start": df["candle_start"], "future_return": future_return}))
+    all_returns = pd.concat(frames, ignore_index=True)
+    basket = all_returns.groupby("candle_start", as_index=False)["future_return"].mean()
+    basket.columns = ["candle_start", "basket_mean_return"]
+    return basket
 
-    if len(df) < MIN_ROWS:
-        return f"{symbol}: only {len(df)} candles so far (need {MIN_ROWS}+) - too early to train."
 
-    df = build_features(df, load_btc_lag_series())
+def build_features_relative(df: pd.DataFrame, btc_lag: pd.DataFrame, basket_mean_return: pd.DataFrame) -> pd.DataFrame:
+    """Cross-sectional target: does this coin's own HORIZON_CANDLES-ahead
+    return beat the basket's mean return at the same timestamp? Cancels out
+    market-wide moves (BTC dragging every coin up together isn't
+    coin-specific information) instead of predicting absolute direction.
+    Same features as build_features (_add_technical_features) - only the
+    label differs."""
+    df = _add_technical_features(df, btc_lag)
+    future_close = df["close"].shift(-HORIZON_CANDLES)
+    df["own_return"] = (future_close - df["close"]) / df["close"]
+    df = pd.merge_asof(df.sort_values("candle_start"), basket_mean_return.sort_values("candle_start"),
+                        on="candle_start", direction="backward", tolerance=pd.Timedelta(minutes=5))
+    df["target"] = np.where(
+        df["own_return"].notna() & df["basket_mean_return"].notna(),
+        df["own_return"] > df["basket_mean_return"], np.nan,
+    )
+    df = df.dropna().reset_index(drop=True)
+    df["target"] = df["target"].astype(int)
+    return df
+
+
+def _train_and_evaluate(df: pd.DataFrame, saved_model_name: str, up_rate_desc: str) -> str:
+    """Shared training core for both target framings (build_features:
+    absolute direction, build_features_relative: cross-sectional vs the
+    basket) - purging, hyperparameter search, per-fold spread, bootstrap CI,
+    and the Postgres save are identical either way; only how `df["target"]`
+    got computed upstream differs. Returns the summary line; up_rate_desc
+    fills in what a positive target actually means for that framing (e.g.
+    "were higher an hour later" vs "beat the basket average").
+    """
     X, y = df[FEATURE_COLS], df["target"]
 
     # Chronological 80/20 split, purged at the boundary: the last
@@ -308,6 +363,16 @@ def train_symbol(symbol: str) -> str:
     train_end = max(0, test_start - HORIZON_CANDLES)
     X_train, y_train = X.iloc[:train_end], y.iloc[:train_end]
     X_test, y_test = X.iloc[test_start:], y.iloc[test_start:]
+
+    # A single-class training slice (e.g. one coin beating the basket
+    # every single hour in the window) makes XGBoost raise outright rather
+    # than degrade - vanishingly rare for the absolute-direction target
+    # (up-rate always sits near 50% in practice) but a real, if unlikely,
+    # possibility for the cross-sectional one, now that this core is
+    # shared by both. Same friendly wording as analyze_opportunity_model.py's
+    # equivalent guard rather than a raw stack trace.
+    if y_train.nunique() < 2:
+        return f"{len(df)} candles, {y.mean()*100:.1f}% {up_rate_desc}, no variation in the training window to learn from yet."
 
     # Hyperparameter search over PARAM_GRID, scored by walk-forward CV
     # (PurgedTimeSeriesSplit) rather than plain k-fold - a random k-fold
@@ -384,7 +449,7 @@ def train_symbol(symbol: str) -> str:
     # of bug as the NaN-vs-None issue elsewhere in this file. Cast to plain
     # Python float before it ever reaches Postgres.
     blob = pickle.dumps(model)
-    logger.save_model(model_name(symbol), blob, {
+    logger.save_model(saved_model_name, blob, {
         "auc": auc, "auc_ci_low": ci_low, "auc_ci_high": ci_high, "auc_significant": significant,
         "accuracy": accuracy, "rows": len(df), "features": FEATURE_COLS,
         "best_params": search.best_params_, "cv_auc": round(float(search.best_score_), 3),
@@ -393,23 +458,64 @@ def train_symbol(symbol: str) -> str:
 
     up_rate = df["target"].mean()
     folds_str = ", ".join(f"{a:.3f}" for a in fold_aucs)
-    return (f"{symbol}: {len(df)} candles, {up_rate*100:.1f}% were higher an hour later historically, "
+    return (f"{len(df)} candles, {up_rate*100:.1f}% {up_rate_desc}, "
             f"test AUC {auc_str}{ci_str}, accuracy {accuracy*100:.1f}%, "
             f"best params {search.best_params_} "
             f"(CV AUC {search.best_score_:.3f}, folds [{folds_str}] spread {fold_spread:.3f})")
 
 
 def train() -> str:
-    """Trains every symbol in config.PREDICT_SYMBOLS, returns a combined
-    summary. Isolated per-symbol - one coin hitting a network hiccup or
-    slow fetch shouldn't take the whole run down and leave every other
-    coin (and the run's own recorded result) stuck on stale data too."""
+    """Trains every symbol in config.PREDICT_SYMBOLS, two ways each:
+
+    - The absolute-direction model (price_trend_{symbol}), used by
+      /predict - unchanged.
+    - A cross-sectional model (price_trend_rel_{symbol}, model_name_relative)
+      predicting whether this coin beats the basket's mean return instead
+      of its own absolute direction - see build_features_relative's
+      docstring for why. Trained and scored side by side with the same
+      purge/CV/bootstrap-CI harness so the two are directly comparable in
+      this summary, but NOT yet wired into /predict - it's an open
+      question whether cross-sectional framing actually helps here, so it
+      stays a parallel experiment (visible via the dashboard's Trained
+      models table) until a few days of results say otherwise, same
+      caution applied to the order-book features.
+
+    Isolated per-symbol - one coin hitting a network hiccup or slow fetch
+    shouldn't take the whole run down and leave every other coin (and the
+    run's own recorded result) stuck on stale data too.
+    """
     results = []
+
+    # Every symbol backfilled BEFORE computing the basket average below -
+    # otherwise a symbol still catching up on its own backfill would drag
+    # the average down using thin/incomplete history relative to the others.
+    dfs = {}
+    for symbol in config.PREDICT_SYMBOLS:
+        df = load_candles(symbol)
+        ensure_backfilled(symbol, df)
+        dfs[symbol] = load_candles(symbol)  # re-read - picks up whatever ensure_backfilled just topped up
+
+    basket_mean_return = build_basket_mean_return(dfs)
+    btc_lag = load_btc_lag_series()
+
     for symbol in config.PREDICT_SYMBOLS:
         try:
-            results.append(train_symbol(symbol))
+            df = dfs[symbol]
+            if len(df) < MIN_ROWS:
+                results.append(f"{symbol}: only {len(df)} candles so far (need {MIN_ROWS}+) - too early to train.")
+                continue
+
+            abs_summary = _train_and_evaluate(build_features(df, btc_lag), model_name(symbol),
+                                               "were higher an hour later historically")
+            results.append(f"{symbol}: {abs_summary}")
+
+            rel_summary = _train_and_evaluate(build_features_relative(df, btc_lag, basket_mean_return),
+                                               model_name_relative(symbol),
+                                               "beat the basket average an hour later historically")
+            results.append(f"{symbol} (relative): {rel_summary}")
         except Exception as e:
             results.append(f"{symbol}: training failed - {e}")
+
     return "Price-trend models:\n  " + "\n  ".join(results) + "\n\nAvailable via /predict in Telegram."
 
 
