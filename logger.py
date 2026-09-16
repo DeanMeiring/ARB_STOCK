@@ -930,6 +930,72 @@ def get_last_trade_time():
     return row[0] if row else None
 
 
+def init_pause_state():
+    """
+    paper_trading_pause: a separate, simpler on/off switch from
+    governor_state above - that one gates real-money execution (which has
+    never been on this whole project); this one gates
+    prediction_tracker.check_signals() itself, freezing ALL paper-trading
+    decisions (new buys, normal signal-sells, and the stop-loss/take-profit
+    circuit breakers alike, for BOTH the absolute and relative strategies -
+    check_signals(strategy=...) checks this before dispatching on strategy
+    at all) while paused, not just new entries. Singleton row, same upsert
+    pattern as governor_state.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS paper_trading_pause (
+            id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            paused BOOLEAN NOT NULL DEFAULT FALSE,
+            paused_until TIMESTAMPTZ,
+            reason TEXT,
+            updated_at TIMESTAMPTZ NOT NULL
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_pause_state() -> dict:
+    """{'paused': bool, 'paused_until': datetime|None, 'reason': str|None}.
+    'paused' reflects the EFFECTIVE state right now - a timed pause whose
+    paused_until has already passed reads back as not paused, so a timed
+    sleep auto-resumes on its own without anyone calling /unpause."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("SELECT paused, paused_until, reason FROM paper_trading_pause WHERE id = 1")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return {"paused": False, "paused_until": None, "reason": None}
+    paused, paused_until, reason = row
+    if paused and paused_until is not None and paused_until <= datetime.now(timezone.utc):
+        return {"paused": False, "paused_until": None, "reason": None}
+    return {"paused": paused, "paused_until": paused_until, "reason": reason}
+
+
+def set_pause(paused: bool, paused_until=None, reason: str = None):
+    """paused_until=None with paused=True means paused indefinitely (the
+    "off switch"); a real timestamp means a timed sleep that auto-resumes
+    (get_pause_state handles the expiry check, nothing needs to actively
+    flip this row back)."""
+    conn = _connect()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO paper_trading_pause (id, paused, paused_until, reason, updated_at)
+        VALUES (1, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            paused = EXCLUDED.paused, paused_until = EXCLUDED.paused_until,
+            reason = EXCLUDED.reason, updated_at = EXCLUDED.updated_at
+    """, (paused, paused_until, reason, datetime.now(timezone.utc)))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
 def get_kill_switch() -> dict:
     """{'killed': bool, 'reason': str|None, 'updated_at': datetime|None} - killed=False if never set."""
     conn = _connect()

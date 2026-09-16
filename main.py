@@ -338,6 +338,7 @@ async def main():
     # end-to-end against Testnet before anyone flips EXECUTE_TRADES for real.
     logger.init_trading_tables()
     logger.init_prediction_tracking()
+    logger.init_pause_state()
     if config.EXECUTE_TRADES:
         print("*** EXECUTE_TRADES is ON - real orders will be placed against "
               f"{config.BINANCE_BASE_URL} ***")

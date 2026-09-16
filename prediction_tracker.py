@@ -41,6 +41,16 @@ Every symbol also gets a row in logger.prediction_snapshots on every check,
 whether or not it crossed the buy threshold - see
 logger.get_prediction_vs_actual for how the dashboard turns that into a
 predicted-vs-actual-price-an-hour-later comparison.
+
+check_signals() does nothing at all - no buys, sells, circuit breakers, or
+prediction_snapshots logging, for EITHER strategy - while
+logger.get_pause_state() reports paused (see /pause and /unpause in
+telegram_bot.py, or the dashboard's pause control). This is a separate,
+simpler switch from governor_state/EXECUTE_TRADES, which only ever gates
+real-money execution (never used on this project) - this one freezes
+paper trading itself. main.py's hourly loop keeps calling check_signals()
+for both strategies on its normal schedule regardless of pause state;
+pausing just makes each call a no-op until it expires or /unpause is sent.
 """
 
 from datetime import datetime, timezone
@@ -60,6 +70,13 @@ def check_signals(strategy: str = "absolute"):
     telegram_bot.py's /predict handler: pandas/xgboost only load when a
     prediction is actually needed, never in the always-on detector's own
     import path."""
+    pause = logger.get_pause_state()
+    if pause["paused"]:
+        until = f" until {pause['paused_until'].isoformat()}" if pause["paused_until"] else " (indefinitely)"
+        print(f"[prediction-tracker:{strategy}] paused{until} - {pause['reason'] or 'no reason given'}. "
+              f"Skipping this check entirely.")
+        return
+
     import price_predictor
     predict_fn = price_predictor.predict_symbol if strategy == "absolute" else price_predictor.predict_symbol_relative
     snapshot_dict = web.last_check_snapshot if strategy == "absolute" else web.last_check_snapshot_relative

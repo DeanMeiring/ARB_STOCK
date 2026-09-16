@@ -15,9 +15,27 @@ HTTP calls are pushed to a thread so they never stall the WS loop.
 """
 
 import asyncio
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 import requests
 import config
+
+_DURATION_RE = re.compile(r"^(\d+)\s*(m|min|mins|h|hr|hrs|hour|hours|d|day|days)?$", re.IGNORECASE)
+_DURATION_UNITS = {
+    None: "minutes", "m": "minutes", "min": "minutes", "mins": "minutes",
+    "h": "hours", "hr": "hours", "hrs": "hours", "hour": "hours", "hours": "hours",
+    "d": "days", "day": "days", "days": "days",
+}
+
+
+def _parse_duration(text: str):
+    """'90' -> 90 minutes, '2h' -> 2 hours, '1d' -> 1 day, etc. - used by
+    /pause <duration>. Returns a timedelta, or None if unparseable."""
+    match = _DURATION_RE.match(text.strip())
+    if not match:
+        return None
+    amount, unit = match.groups()
+    return timedelta(**{_DURATION_UNITS[unit.lower() if unit else None]: int(amount)})
 
 
 def _format_ago(ts):
@@ -137,6 +155,10 @@ class TelegramNotifier:
             self._handle_halt(chat_id, text)
         elif text.startswith("/resume"):
             self._handle_resume(chat_id)
+        elif text.startswith("/unpause"):
+            self._handle_unpause(chat_id)
+        elif text.startswith("/pause"):
+            self._handle_pause(chat_id, text)
 
     def _handle_login(self, chat_id, text):
         import logger  # deferred to avoid a hard import-time DB dependency
@@ -280,6 +302,50 @@ class TelegramNotifier:
 
         logger.set_kill_switch(False, None)
         self._send(chat_id, "✅ Kill switch OFF. Trading governor checks (daily loss limit, rate limiter, etc.) still apply.")
+
+    def _handle_pause(self, chat_id, text):
+        """/pause (no args) - pause paper trading indefinitely (the "off
+        switch"). /pause <duration> (e.g. 90, 90m, 2h, 1d - bare number is
+        minutes) - pause for that long, auto-resuming on its own (see
+        logger.get_pause_state). Freezes prediction_tracker.check_signals()
+        entirely for BOTH strategies - no buys, sells, stop-loss/take-profit,
+        or prediction logging - not just new entries."""
+        import logger
+
+        if chat_id not in logger.get_subscribers():
+            self._send(chat_id, "Not logged in - send /login <password> first.")
+            return
+
+        parts = text.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if not arg:
+            logger.set_pause(True, None, "manually paused via /pause")
+            self._send(chat_id, "⏸ Paper trading PAUSED indefinitely (both strategies) - no buys, sells, "
+                                 "or circuit breakers until /unpause. Everything else (detection, dashboard) "
+                                 "keeps running.")
+            return
+
+        duration = _parse_duration(arg)
+        if duration is None:
+            self._send(chat_id, f"Couldn't parse '{arg}' as a duration - try a plain number of minutes (90), "
+                                 "or with a unit (90m, 2h, 1d).")
+            return
+
+        paused_until = datetime.now(timezone.utc) + duration
+        logger.set_pause(True, paused_until, f"paused via /pause {arg}")
+        self._send(chat_id, f"⏸ Paper trading PAUSED until {paused_until.strftime('%H:%M UTC')} "
+                             f"(~{int(duration.total_seconds() // 60)} min) - auto-resumes then, or send /unpause sooner.")
+
+    def _handle_unpause(self, chat_id):
+        import logger
+
+        if chat_id not in logger.get_subscribers():
+            self._send(chat_id, "Not logged in - send /login <password> first.")
+            return
+
+        logger.set_pause(False, None, None)
+        self._send(chat_id, "▶ Paper trading RESUMED - normal buy/sell/circuit-breaker logic applies again.")
 
     def _handle_callback(self, callback):
         callback_id = callback["id"]

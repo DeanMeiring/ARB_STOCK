@@ -15,6 +15,7 @@ recommended once deployed, since Railway will expose this on a public URL.
 
 import pathlib
 import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import HTMLResponse
@@ -142,6 +143,38 @@ def api_prediction_schedule(_auth=Depends(require_auth)):
     coin's signal - see the prediction_schedule module-level dict above."""
     next_at = prediction_schedule["next_check_at"]
     return {"next_check_at": next_at.isoformat() if next_at else None}
+
+
+@app.get("/api/pause_state")
+def api_pause_state(_auth=Depends(require_auth)):
+    """Whether prediction_tracker.check_signals() is currently frozen (for
+    BOTH strategies) - see logger.get_pause_state. Reflects auto-expiry: a
+    timed pause whose paused_until has passed already reports back as not
+    paused."""
+    state = logger.get_pause_state()
+    return {
+        "paused": state["paused"],
+        "paused_until": state["paused_until"].isoformat() if state["paused_until"] else None,
+        "reason": state["reason"],
+    }
+
+
+@app.post("/api/pause")
+def api_pause(minutes: int = None, _auth=Depends(require_auth)):
+    """minutes omitted/null = pause indefinitely (the dashboard's "off
+    switch"); a value = timed pause that auto-resumes on its own once
+    paused_until passes (see logger.get_pause_state) - no need to call
+    /api/unpause for a timed one unless resuming early."""
+    paused_until = datetime.now(timezone.utc) + timedelta(minutes=minutes) if minutes else None
+    reason = f"paused via dashboard ({minutes} min)" if minutes else "paused via dashboard (indefinite)"
+    logger.set_pause(True, paused_until, reason)
+    return {"ok": True}
+
+
+@app.post("/api/unpause")
+def api_unpause(_auth=Depends(require_auth)):
+    logger.set_pause(False, None, None)
+    return {"ok": True}
 
 
 @app.get("/api/last_check_snapshot")
