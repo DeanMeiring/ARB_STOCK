@@ -58,3 +58,59 @@ A stocks-market parallel version of this same system (own dashboard, own
 data source, own pipeline - not intermixed with the crypto tables) is
 being planned/built alongside this - see recent conversation history for
 the design discussion.
+
+A second, separate session (not this one) added, in parallel: a
+cross-sectional/relative-strength model (does-this-coin-beat-the-basket,
+alongside the original absolute up/down one - see
+build_features_relative/predict_symbol_relative, `strategy` params
+throughout, and `web/relative_dashboard.html` at `/relative`), purged
+walk-forward CV with bootstrapped AUC confidence intervals (the honest
+"is this a real edge or noise" check - `auc_ci_low`/`auc_ci_high`/
+`auc_significant` in trained_models metadata), and order-book
+imbalance/spread collection (not yet in FEATURE_COLS - see
+`market_candles.avg_imbalance`/`avg_spread_bps`, no backfill path exists
+for these). An off-switch/timed-sleep for paper trading also exists
+(`/pause`, `/pause <duration>`, `/unpause` in Telegram; a dashboard tile)
+- one shared switch that freezes BOTH strategies at once, separate from
+the pre-existing `/halt` kill switch (which only ever gated real-money
+execution, never used on this project).
+
+## Findings as of 2026-09-21 - read this before assuming either model needs more work
+
+Checked the actual bootstrapped AUC + 95% CI (not just win-rate %) across
+4 consecutive days of retraining (Sept 17-20): **both the absolute and
+relative models sit at "not distinguishable from chance" on 6 of 7
+coins, every single day.** DOGEUSDT is the one coin with a borderline-real
+signal in both strategies - but the absolute model's DOGEUSDT AUC has
+been equal to or slightly HIGHER than the relative model's every day
+that week (e.g. 0.542 vs 0.517 on the 20th). There is no evidence in the
+rigorous metric that the relative/cross-sectional reframing is actually
+better - if anything it leans the other way on the one coin either model
+shows real signal on.
+
+The dashboard's apparent 62% (relative, 13/21 trades) vs 55% (absolute,
+49/89 trades) lifetime gross win-rate gap looked meaningful from the raw
+percentage alone, but isn't: computed the actual binomial probability of
+seeing results at least that extreme from a true 50/50 coin flip - about
+19-20% for BOTH models. Small samples naturally swing further from 50%;
+that gap is consistent with pure noise, not a real difference between
+the two strategies. Don't reach for "the relative model looks more
+promising" from win-rate percentages alone - check auc_significant/the
+CI first, same as this session did.
+
+Given no real edge is currently demonstrated on either model (except the
+maybe-real, inconsistent DOGEUSDT signal) and to cut Railway costs, the
+ARB_STOCK app was put into Railway sleep mode on 2026-09-21
+(`sleepApplication: true` + redeploy) rather than deleted - it idles
+after inactivity and wakes on the next request to its dashboard URL.
+Everything (code, Postgres data, trained models) is untouched and ready
+to resume. Note: since main.py runs the price streams, paper trading,
+AND the Telegram bot all in one process, NOTHING responds while asleep -
+not even Telegram commands - and simply visiting the dashboard is what
+wakes it back up. If asked to bring it back to always-on, disable
+sleepApplication via Railway's update-service and redeploy.
+
+If/when picked back up: the highest-signal next step is investigating
+DOGEUSDT specifically (why it's the one coin either model shows anything
+on), not blindly investing more in the relative strategy - that's not
+supported by the evidence gathered so far.
